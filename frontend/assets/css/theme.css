@@ -1,0 +1,193 @@
+/* 主題變量定義 */
+:root {
+  /* 亮色模式的預設顏色變量 */
+  --background-color: #f8f9fa;
+  --card-background: #ffffff;
+  --text-color: #212529;
+  --text-secondary: #6c757d;
+  --border-color: #dee2e6;
+  --primary-color: #0d6efd;
+  --primary-hover: #0b5ed7;
+  --secondary-color: #6c757d;
+  --success-color: #198754;
+  --danger-color: #dc3545;
+  --warning-color: #ffc107;
+  --info-color: #0dcaf0;
+  --shadow: rgba(0, 0, 0, 0.1);
+  
+  /* RGB 變數，用於透明效果 */
+  --primary-color-rgb: 13, 110, 253;
+  --success-color-rgb: 25, 135, 84;
+  --info-color-rgb: 13, 202, 240;
+}
+
+/* 深色模式變量 */
+.dark-mode {
+  --background-color: #121212;
+  --card-background: #1e1e1e;
+  --text-color: #e0e0e0;
+  --text-secondary: #adb5bd;
+  --border-color: #2d3238;
+  --primary-color: #4d94ff;
+  --primary-hover: #3a7bd5;
+  --secondary-color: #909294;
+  --success-color: #28a745;
+  --danger-color: #dc3545;
+  --warning-color: #ffa000;
+  --info-color: #0dcaf0;
+  --shadow: rgba(0, 0, 0, 0.5);
+  
+  /* RGB 變數，用於透明效果 */
+  --primary-color-rgb: 77, 148, 255;
+  --success-color-rgb: 40, 167, 69;
+  --info-color-rgb: 13, 202, 240;
+}
+
+/* 套用變量的全局樣式 */
+body {
+  background-color: var(--background-color);
+  color: var(--text-color);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.card {
+  background-color: var(--card-background);
+  border-color: var(--border-color);
+  box-shadow: 0 0.125rem 0.25rem var(--shadow);
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+.text-muted, .text-secondary, .speed-text.small {
+  color: var(--text-secondary) !important;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-primary:hover, .btn-primary:focus {
+  background-color: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+/* 按鈕適配 */
+.btn-outline-primary {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-outline-primary:hover {
+  background-color: var(--primary-color);
+  color: #fff;
+}
+
+/* 輸入框適配 */
+.form-control {
+  background-color: var(--card-background);
+  border-color: var(--border-color);
+  color: var(--text-color);
+}
+
+.form-control:focus {
+  background-color: var(--card-background);
+  color: var(--text-color);
+  border-color: var(--primary-color);
+}
+
+/* 深色模式下輸入框適配 */
+.dark-mode .form-control {
+  background-color: var(--card-background);
+  border-color: var(--border-color);
+  color: var(--text-color);
+}
+
+.dark-mode .form-control::placeholder { /* 修正 placeholder 顏色 */
+  color: var(--text-secondary);
+}
+
+/* 下拉選單適配 */
+.dropdown-menu {
+  background-color: var(--card-background);
+  border-color: var(--border-color);
+}
+
+.dropdown-item {
+  color: var(--text-color);
+}
+
+.dropdown-item:hover, .dropdown-item:focus {
+  background-color: rgba(var(--primary-color-rgb), 0.1);
+}
+
+/* 進度條適配 */
+.progress {
+  background-color: var(--border-color);
+}
+
+/* 提醒框適配 */
+.alert-info {
+  background-color: rgba(var(--info-color-rgb), 0.2);
+  color: var(--info-color);
+  border-color: rgba(var(--info-color-rgb), 0.3);
+}
+
+.alert-success {
+  background-color: rgba(var(--success-color-rgb), 0.2);
+  color: var(--success-color);
+  border-color: rgba(var(--success-color-rgb), 0.3);
+}
+
+.alert-danger {
+  background-color: rgba(var(--danger-color), 0.2);
+  color: var(--danger-color);
+  border-color: rgba(var(--danger-color), 0.3);
+}
+
+/* 檔案傳輸組件適配 */
+.file-item {
+  border-color: var(--border-color);
+}
+
+/* 連接代碼顯示適配 */
+.connection-code {
+  background-color: var(--background-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+}
+
+.dark-mode .connection-code {
+  color: var(--primary-color);
+}
+
+/* 深色模式下調整圖標顏色 */
+.dark-mode .bi {
+  color: var(--text-color);
+}
+
+/* 深色模式下的卡片標題 */
+.dark-mode .card-title {
+  color: var(--text-color);
+}
+
+/* 無效控件樣式 */
+.dark-mode .form-control:disabled,
+.dark-mode .form-control[readonly] {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+}
+
+/* 暗黑模式下修正特定元素的文字顏色 */
+.dark-mode span,
+.dark-mode label,
+.dark-mode .progress-text,
+.dark-mode p,
+.dark-mode h4,
+.dark-mode h6,
+.dark-mode h5 {
+  color: var(--text-color);
+}
+
+.dark-mode .form-text {
+  color: var(--text-secondary);
+}

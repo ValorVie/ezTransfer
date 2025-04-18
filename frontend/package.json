@@ -1,0 +1,28 @@
+{
+  "name": "eztransfer-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "devDependencies": {
+    "@nuxt/devtools": "latest",
+    "@types/node": "latest",
+    "nuxt": "latest",
+    "vite-plugin-remove-console": "latest"
+  },
+  "dependencies": {
+    "@pinia/nuxt": "latest",
+    "bootstrap": "latest",
+    "bootstrap-icons": "latest",
+    "dompurify": "latest",
+    "emoji-picker-element": "latest",
+    "markdown-it": "latest",
+    "pinia": "latest",
+    "sass": "latest"
+  }
+}

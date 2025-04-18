@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: eztransfer-backend-vue
+    image: eztransfer-backend-vue:latest
+    ports:
+      - 8000:8000
+    # 後端熱重載  
+    # command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    restart: unless-stopped
+    # volumes:
+    #   # 將本地 backend 目錄掛載到容器中，以便熱重載
+    #   - ./backend:/app
+    env_file:
+      - .env
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - NODE_ENV_ARG_COMPOSE=production
+    container_name: eztransfer-frontend-vue
+    image: eztransfer-frontend-vue:latest
+    restart: unless-stopped
+    ports:
+      - 3000:3000
+    # volumes:
+    #   # 將本地 frontend 目錄掛載到容器中，以便熱重載
+    #   - ./frontend:/app               # 掛載整個專案到容器中
+    #   - /app/node_modules             # 使用容器內的 node_modules，避免 host 端影響
+    #   - /app/dist                     # 如果有建置輸出目錄也排除掉（可選）
+    depends_on:
+      - backend
+    env_file:
+      - .env

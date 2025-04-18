@@ -1,0 +1,4 @@
+fastapi>=0.100.0 # FastAPI 框架
+uvicorn[standard]>=0.20.0 # ASGI 伺服器 (standard 包含 websockets 和 http-tools)
+websockets>=11.0 # WebSocket 函式庫
+# 可以根據需要添加其他依賴

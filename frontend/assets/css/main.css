@@ -1,0 +1,185 @@
+/* 主要CSS樣式 */
+:root {
+  --bs-primary: #2563eb;
+  --bs-primary-rgb: 37, 99, 235;
+  --bs-secondary: #475569;
+  --bs-secondary-rgb: 71, 85, 105;
+  --bs-success: #10b981;
+  --bs-success-rgb: 16, 185, 129;
+  --bs-info: #0ea5e9;
+  --bs-info-rgb: 14, 165, 233;
+  --bs-warning: #f59e0b;
+  --bs-warning-rgb: 245, 158, 11;
+  --bs-danger: #ef4444;
+  --bs-danger-rgb: 239, 68, 68;
+}
+
+/* 自定義動畫效果 */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+/* 連接代碼的樣式 */
+.connection-code {
+  font-family: 'Courier New', monospace;
+  font-size: 2.5rem;
+  letter-spacing: 0.5rem;
+  font-weight: bold;
+  text-align: center;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  transition: all 0.3s ease;
+}
+
+/* 檔案拖放區域 */
+.drop-zone {
+  border: 2px dashed var(--border-color);
+  border-radius: 0.5rem;
+  padding: 2rem;
+  text-align: center;
+  transition: all 0.3s ease;
+  background-color: var(--card-background);
+}
+
+.drop-zone.active {
+  border-color: var(--primary-color);
+  background-color: rgba(var(--primary-color-rgb), 0.1);
+}
+
+/* 進度條自定義樣式 */
+.progress {
+  height: 1.5rem;
+  border-radius: 0.5rem;
+  background-color: var(--border-color);
+}
+
+.progress-bar {
+  background-color: var(--primary-color);
+}
+
+/* 檔案列表 */
+.file-item {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  margin-bottom: 0.5rem;
+  background-color: var(--card-background);
+  border: 1px solid var(--border-color);
+  transition: all 0.2s ease;
+}
+
+.file-item:hover {
+  background-color: var(--background-color);
+}
+
+.file-icon {
+  font-size: 1.5rem;
+  margin-right: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.file-info {
+  flex-grow: 1;
+}
+
+.file-name {
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+  color: var(--text-color);
+}
+
+.file-meta {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* 連接狀態指示器 */
+.status-indicator {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  margin-right: 0.5rem;
+}
+
+.status-indicator.connecting {
+  background-color: var(--bs-warning);
+  animation: pulse 1.5s infinite;
+}
+
+.status-indicator.connected {
+  background-color: var(--bs-success);
+}
+
+.status-indicator.disconnected {
+  background-color: var(--bs-danger);
+}
+
+@keyframes pulse {
+  0% { opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { opacity: 0.6; }
+}
+
+/* 主頁特定樣式 */
+.home-card {
+  transition: transform 0.3s ease, background-color 0.3s ease, border-color 0.3s ease;
+  cursor: pointer;
+  max-width: 24rem;
+  margin: 0 auto;
+  background-color: var(--card-background);
+  border-color: var(--border-color);
+}
+
+.home-card:hover {
+  transform: translateY(-5px);
+  border-color: var(--primary-color);
+}
+
+.home-icon {
+  font-size: 2.5rem;
+  margin-bottom: 1rem;
+  color: var(--primary-color);
+}
+
+/* 按鈕樣式 */
+.btn-primary {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-primary:hover, .btn-primary:focus {
+  background-color: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.btn-outline-primary {
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-outline-primary:hover {
+  background-color: var(--primary-color);
+  color: #fff;
+}
+
+/* 響應式調整 */
+@media (max-width: 768px) {
+  .connection-code {
+    font-size: 2rem;
+    letter-spacing: 0.3rem;
+  }
+  
+  .home-card {
+    margin-bottom: 1.5rem;
+  }
+}

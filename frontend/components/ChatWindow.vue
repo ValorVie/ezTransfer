@@ -463,7 +463,7 @@ const logMessageDetails = (message) => {
 
 ::v-deep emoji-picker {
   --emoji-size: 1.0rem; /* 依照需要改小，例如 1rem、0.8rem */
-  max-height: 25vh;
+  max-height: 45vh;
   --input-padding: 0.2rem 0.4rem;
   --input-font-size: 0.8rem;
   --input-line-height: 1;

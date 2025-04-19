@@ -197,6 +197,7 @@ export const useConnectionStore = defineStore('connection', () => {
       if (state === 'connected') {
         status.value = 'connected';
         isLoading.value = false;
+        errorMessage.value = '';
       } else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
         status.value = 'disconnected';
         errorMessage.value = '連接已斷開或失敗';
@@ -207,6 +208,7 @@ export const useConnectionStore = defineStore('connection', () => {
     webRTCManager.onDataChannelOpen = () => {
       status.value = 'connected';
       isLoading.value = false;
+      errorMessage.value = '';
     };
     
     // 資料通道關閉

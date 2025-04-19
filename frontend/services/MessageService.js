@@ -88,7 +88,6 @@ export class WebRTCMessageService extends MessageService {
         }
       }
     };
-    
     return true;
   }
   

@@ -145,6 +145,16 @@ class ConnectionManager:
                     receiver_ws, {"type": "peer_connected"}
                 )  # 通知接收方有對等方連接
 
+            elif message_type == "heartbeat":  # 處理心跳消息
+                # 簡單地回應一個心跳確認消息
+                logger.debug(
+                    f"Received heartbeat from {client_ip}, responding with heartbeat_ack"
+                )
+                await self.send_personal_message(
+                    websocket,
+                    {"type": "heartbeat_ack", "timestamp": message.get("timestamp", 0)},
+                )
+
             elif message_type in [
                 "send_offer",
                 "send_answer",

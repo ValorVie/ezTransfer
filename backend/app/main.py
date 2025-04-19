@@ -22,6 +22,7 @@ app = FastAPI(title="ezTransfer Signaling Server")
 # 從環境變數中讀取 origins，並以逗號分隔
 origins = os.getenv("CORS_ALLOW_ORIGINS", "")
 allow_origins = [origin.strip() for origin in origins.split(",") if origin.strip()]
+print("🚀 CORS origins 設定為：", allow_origins, flush=True)
 
 # 新增 CORS 中介軟體設定
 app.add_middleware(

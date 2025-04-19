@@ -387,6 +387,7 @@ export class SignalingClient {
     this.isReconnecting = true;
     this.reconnectAttempts = 0;
     
+    console.log('[DEBUG-Signaling] 嘗試重新連接到信令伺服器，URL:', this.signalingUrl);
     // 通知外部正在重連
     if (this.onReconnecting) {
       this.onReconnecting();
@@ -421,8 +422,10 @@ export class SignalingClient {
     
     // 設置新的重連計時器
     this.reconnectTimer = setTimeout(() => {
+      console.log('[DEBUG-Signaling] 執行重連嘗試');
       this.connect(true).catch(error => {
         console.error('信令伺服器重連失敗:', error);
+        console.log('[DEBUG-Signaling] 安排下一次重連');
         this.scheduleReconnect();
       });
     }, delay);
@@ -461,7 +464,7 @@ export class SignalingClient {
    * 處理重連失敗
    */
   handleReconnectFailure() {
-    console.error('信令伺服器重連最終失敗');
+    console.error('[DEBUG-Signaling] 信令伺服器重連最終失敗');
     this.isReconnecting = false;
     
     if (this.reconnectTimer) {
@@ -473,6 +476,7 @@ export class SignalingClient {
     if (this.onReconnectFailed) {
       this.onReconnectFailed();
     }
+    console.log('[DEBUG-Signaling] 重連失敗處理完成');
   }
   
   /**

@@ -745,11 +745,11 @@ export class WebRTCManager {
     console.error('[DEBUG-WebRTC] WebRTC 重連最終失敗');
     console.log('[DEBUG-WebRTC] 頁面路徑:', window.location.pathname);
     console.log('[DEBUG-WebRTC] 網路連接狀態:', navigator.onLine ? '在線' : '離線');
-    console.log('[DEBUG-WebRTC] 當前連接狀態:', {
+    console.log('[DEBUG-WebRTC] 當前連接狀態:', this.peerConnection ? {
       connectionState: this.peerConnection?.connectionState,
       iceConnectionState: this.peerConnection?.iceConnectionState,
       signalingState: this.signalingClient?.isConnected ? 'connected' : 'disconnected'
-    });
+    } : '對等連接尚未初始化');
     this.isReconnecting = false;
     
     if (this.reconnectTimer) {

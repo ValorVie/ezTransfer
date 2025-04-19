@@ -295,6 +295,10 @@ const isValidCode = computed(() => {
 
 // 當組件掛載時重置當前連接狀態
 onMounted(() => {
+  console.log('[DEBUG-Send] Send 頁面掛載，頁面路徑:', window.location.pathname);
+  console.log('[DEBUG-Send] 連接狀態:', connectionStore.status);
+  console.log('[DEBUG-Send] 角色:', connectionStore.role);
+  
   connectionStore.reset();
   transferStore.reset();
 });

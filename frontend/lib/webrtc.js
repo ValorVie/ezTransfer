@@ -512,6 +512,7 @@ export class WebRTCManager {
    * @param {string} state - 具體狀態
    */
   handleConnectionIssue(type, state) {
+    console.log('[DEBUG-WebRTC] 檢測到連接問題，類型:', type, '狀態:', state, '頁面路徑:', window.location.pathname);
     // 如果連接已關閉 (close() 被調用)，不執行重連
     if (state === 'closed' || !this.peerConnection) {
       return;
@@ -530,12 +531,28 @@ export class WebRTCManager {
    * 嘗試重新連接
    */
   tryReconnect() {
+    console.log('[DEBUG-WebRTC] 開始嘗試重連，頁面路徑:', window.location.pathname);
+    console.log('[DEBUG-WebRTC] 網路連接狀態:', navigator.onLine ? '在線' : '離線');
+    
     // 標記為重連中
     this.isReconnecting = true;
     this.reconnectAttempts = 0;
     
+    // 輸出當前 WebRTC 與信令狀態
+    if (this.peerConnection) {
+      console.log('[DEBUG-WebRTC] 當前連接狀態:', {
+        connectionState: this.peerConnection.connectionState,
+        iceConnectionState: this.peerConnection.iceConnectionState,
+        iceGatheringState: this.peerConnection.iceGatheringState,
+        signalingState: this.peerConnection.signalingState
+      });
+    } else {
+      console.log('[DEBUG-WebRTC] peerConnection 為空，無法獲取連接狀態');
+    }
+    
     // 通知外部正在重連
     if (this.onReconnecting) {
+      console.log('[DEBUG-WebRTC] 通知外部開始重連');
       this.onReconnecting();
     }
     
@@ -547,6 +564,8 @@ export class WebRTCManager {
    * 安排下一次重連 (使用指數退避算法)
    */
   scheduleReconnect() {
+    console.log('[DEBUG-WebRTC] 計劃下一次重連嘗試，當前嘗試次數:', this.reconnectAttempts);
+    
     // 如果超過最大重連次數，放棄重連
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error(`重連失敗: 已達最大嘗試次數 (${this.maxReconnectAttempts})`);
@@ -687,7 +706,18 @@ export class WebRTCManager {
   handleReconnectSuccess() {
     if (!this.isReconnecting) return;
     
-    console.log('WebRTC 重連成功!');
+    console.log('[DEBUG-WebRTC] WebRTC 重連成功!');
+    console.log('[DEBUG-WebRTC] 頁面路徑:', window.location.pathname);
+    
+    // 輸出當前狀態
+    if (this.peerConnection) {
+      console.log('[DEBUG-WebRTC] 重連後連接狀態:', {
+        connectionState: this.peerConnection.connectionState,
+        iceConnectionState: this.peerConnection.iceConnectionState,
+        signalingState: this.peerConnection.signalingState
+      });
+    }
+    
     this.isReconnecting = false;
     this.reconnectAttempts = 0;
     
@@ -703,6 +733,7 @@ export class WebRTCManager {
     
     // 通知外部重連成功
     if (this.onReconnected) {
+      console.log('[DEBUG-WebRTC] 通知外部重連成功');
       this.onReconnected();
     }
   }
@@ -711,7 +742,14 @@ export class WebRTCManager {
    * 處理重連失敗
    */
   handleReconnectFailure() {
-    console.error('WebRTC 重連最終失敗');
+    console.error('[DEBUG-WebRTC] WebRTC 重連最終失敗');
+    console.log('[DEBUG-WebRTC] 頁面路徑:', window.location.pathname);
+    console.log('[DEBUG-WebRTC] 網路連接狀態:', navigator.onLine ? '在線' : '離線');
+    console.log('[DEBUG-WebRTC] 當前連接狀態:', {
+      connectionState: this.peerConnection?.connectionState,
+      iceConnectionState: this.peerConnection?.iceConnectionState,
+      signalingState: this.signalingClient?.isConnected ? 'connected' : 'disconnected'
+    });
     this.isReconnecting = false;
     
     if (this.reconnectTimer) {
@@ -721,6 +759,7 @@ export class WebRTCManager {
     
     // 通知外部重連失敗
     if (this.onReconnectFailed) {
+      console.log('[DEBUG-WebRTC] 通知外部重連失敗');
       this.onReconnectFailed();
     }
   }

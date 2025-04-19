@@ -169,6 +169,12 @@ export const useConnectionStore = defineStore('connection', () => {
     
     // 對等方斷開連接事件
     signalingClient.onPeerDisconnected = () => {
+      console.log('[DEBUG-ConnectionStore] 收到對等方斷開連接通知，當前重連狀態:', isReconnecting.value);
+      console.log('[DEBUG-ConnectionStore] WebRTC 連接狀態:', webRTCManager ? webRTCManager.peerConnection?.connectionState : 'no manager');
+      console.log('[DEBUG-ConnectionStore] WebRTC ICE 狀態:', webRTCManager ? webRTCManager.peerConnection?.iceConnectionState : 'no manager');
+      console.log('[DEBUG-ConnectionStore] 頁面角色:', role.value);
+      console.log('[DEBUG-ConnectionStore] 發生在頁面:', window.location.pathname);
+      
       status.value = 'disconnected';
       errorMessage.value = '對方已斷開連接';
     };

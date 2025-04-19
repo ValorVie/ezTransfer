@@ -149,6 +149,7 @@ export class SignalingClient {
           this.stopHeartbeat();
           this.isConnected = false;
           console.log(`信令伺服器連接已關閉 (Code: ${event.code}, Reason: ${event.reason || 'None'})`);
+          console.log('[DEBUG-Signaling] 嘗試自動重連:', this.autoReconnect, '當前重連狀態:', this.isReconnecting);
           
           // 只有當不是在重連過程中斷開時，才嘗試自動重連
           if (this.autoReconnect && !this.isReconnecting) {

@@ -1,4 +1,5 @@
 import { useRuntimeConfig } from '#imports';
+import { ConnectionMonitor } from './connectionMonitor';
 
 /**
  * WebRTC 管理器類
@@ -47,6 +48,31 @@ export class WebRTCManager {
     this.onDataChannelMessage = null;    // 當數據通道接收訊息時
     this.onDataChannelError = null;      // 當數據通道發生錯誤時
     this.onConnectionStateChange = null; // 當連接狀態變更時
+    this.onReconnecting = null;          // 當嘗試重新連接時
+    this.onReconnected = null;           // 當重新連接成功時
+    this.onReconnectFailed = null;       // 當重新連接失敗時
+    this.onConnectionQualityChange = null; // 當連接質量變更時
+    
+    // 重連相關設置
+    this.maxReconnectAttempts = options.maxReconnectAttempts || 5;  // 最大重連嘗試次數
+    this.reconnectBaseDelay = options.reconnectBaseDelay || 1000;    // 基礎重連延遲(毫秒)
+    this.isReconnecting = false;         // 是否正在嘗試重連
+    this.reconnectAttempts = 0;          // 當前重連嘗試次數
+    this.reconnectTimer = null;          // 重連計時器
+    this.lastIceConnectionState = null;  // 上一次的 ICE 連接狀態
+    this.lastConnectionState = null;     // 上一次的連接狀態
+    
+    // 存儲舊的連接信息，用於重連時恢復
+    this.storedSessionInfo = {
+      localDescription: null,
+      remoteDescription: null
+    };
+    
+    // 連接監測相關設置
+    this.enableConnectionMonitoring = options.enableConnectionMonitoring !== false; // 默認啟用
+    this.connectionMonitor = null;
+    this.connectionQuality = 'unknown';
+    this.adaptiveSettings = {}; // 自適應設置
     
     // 初始化
     this.initialize();
@@ -71,19 +97,51 @@ export class WebRTCManager {
       
       // 設置 ICE 連接狀態變更事件處理
       this.peerConnection.oniceconnectionstatechange = () => {
-        console.log('ICE 連接狀態:', this.peerConnection.iceConnectionState);
+        const iceState = this.peerConnection.iceConnectionState;
+        console.log('ICE 連接狀態:', iceState);
+        
+        // 檢測連接不穩定或斷開的狀態
+        if (iceState === 'disconnected' || iceState === 'failed' || iceState === 'closed') {
+          this.handleConnectionIssue('ice', iceState);
+        } else if (iceState === 'connected' || iceState === 'completed') {
+          // 如果之前有連接問題但現在恢復了
+          if (this.lastIceConnectionState === 'disconnected' || this.lastIceConnectionState === 'failed') {
+            if (this.isReconnecting) {
+              this.handleReconnectSuccess();
+            }
+          }
+        }
+        
+        // 更新上一次狀態
+        this.lastIceConnectionState = iceState;
         
         if (this.onConnectionStateChange) {
-          this.onConnectionStateChange(this.peerConnection.iceConnectionState);
+          this.onConnectionStateChange(iceState);
         }
       };
       
       // 設置連接狀態變更事件處理
       this.peerConnection.onconnectionstatechange = () => {
-        console.log('連接狀態:', this.peerConnection.connectionState);
+        const connState = this.peerConnection.connectionState;
+        console.log('連接狀態:', connState);
+        
+        // 檢測連接不穩定或斷開的狀態
+        if (connState === 'disconnected' || connState === 'failed' || connState === 'closed') {
+          this.handleConnectionIssue('connection', connState);
+        } else if (connState === 'connected') {
+          // 如果之前有連接問題但現在恢復了
+          if (this.lastConnectionState === 'disconnected' || this.lastConnectionState === 'failed') {
+            if (this.isReconnecting) {
+              this.handleReconnectSuccess();
+            }
+          }
+        }
+        
+        // 更新上一次狀態
+        this.lastConnectionState = connState;
         
         if (this.onConnectionStateChange) {
-          this.onConnectionStateChange(this.peerConnection.connectionState);
+          this.onConnectionStateChange(connState);
         }
       };
       
@@ -134,6 +192,11 @@ export class WebRTCManager {
       // 設置數據通道事件處理
       this.setupDataChannel();
       
+      // 如果啟用了連接監測，初始化監測器
+      if (this.enableConnectionMonitoring) {
+        this.initializeConnectionMonitor();
+      }
+      
       return this.dataChannel;
     } catch (error) {
       console.error('創建數據通道失敗:', error);
@@ -153,6 +216,11 @@ export class WebRTCManager {
       if (this.onDataChannelOpen) {
         this.onDataChannelOpen();
       }
+      
+      // 如果啟用了連接監測，開始監測
+      if (this.enableConnectionMonitoring && this.connectionMonitor) {
+        this.connectionMonitor.startMonitoring();
+      }
     };
     
     // 數據通道關閉
@@ -160,6 +228,11 @@ export class WebRTCManager {
       console.log('數據通道已關閉');
       if (this.onDataChannelClose) {
         this.onDataChannelClose();
+      }
+      
+      // 停止連接監測
+      if (this.connectionMonitor) {
+        this.connectionMonitor.stopMonitoring();
       }
     };
     
@@ -213,6 +286,9 @@ export class WebRTCManager {
       
       // 設定本地描述
       await this.peerConnection.setLocalDescription(offer);
+      
+      // 儲存本地描述，用於重連時恢復
+      this.storedSessionInfo.localDescription = offer;
       
       // 發送 Offer 到信令伺服器
       if (this.signalingClient) {
@@ -270,6 +346,9 @@ export class WebRTCManager {
       // 設定遠端描述
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
       
+      // 儲存遠端描述，用於重連時恢復
+      this.storedSessionInfo.remoteDescription = answer;
+      
       console.log('已處理 Answer');
     } catch (error) {
       console.error('處理 Answer 失敗:', error);
@@ -325,6 +404,12 @@ export class WebRTCManager {
    * 關閉連接
    */
   close() {
+    // 停止連接監測
+    if (this.connectionMonitor) {
+      this.connectionMonitor.stopMonitoring();
+      this.connectionMonitor = null;
+    }
+    
     // 關閉數據通道
     if (this.dataChannel) {
       this.dataChannel.close();
@@ -338,5 +423,325 @@ export class WebRTCManager {
     }
     
     console.log('WebRTC 連接已關閉');
+  }
+  
+  /**
+   * 初始化連接監測器
+   */
+  initializeConnectionMonitor() {
+    // 如果已經有監測器，先停止並清理
+    if (this.connectionMonitor) {
+      this.connectionMonitor.stopMonitoring();
+      this.connectionMonitor = null;
+    }
+    
+    // 創建新的連接監測器
+    this.connectionMonitor = new ConnectionMonitor({
+      peerConnection: this.peerConnection,
+      dataChannel: this.dataChannel,
+      onQualityChange: (quality, stats) => {
+        this.handleConnectionQualityChange(quality, stats);
+      },
+      monitorInterval: 5000, // 5秒監測一次
+      minSamples: 3          // 最少需要3個樣本才能評估質量
+    });
+    
+    console.log('已初始化連接監測器');
+  }
+  
+  /**
+   * 處理連接質量變化
+   * @param {string} quality - 新的連接質量
+   * @param {Object} stats - 連接統計信息
+   */
+  handleConnectionQualityChange(quality, stats) {
+    console.log(`連接質量變化: ${this.connectionQuality} -> ${quality}`);
+    
+    // 更新連接質量
+    this.connectionQuality = quality;
+    
+    // 應用自適應設置
+    if (stats && stats.recommendedSettings) {
+      this.adaptiveSettings = stats.recommendedSettings;
+      this.applyAdaptiveSettings();
+    }
+    
+    // 通知外部
+    if (this.onConnectionQualityChange) {
+      this.onConnectionQualityChange(quality, stats);
+    }
+  }
+  
+  /**
+   * 應用自適應設置
+   */
+  applyAdaptiveSettings() {
+    // 根據連接質量應用不同的設置
+    const settings = this.adaptiveSettings;
+    
+    if (!settings) return;
+    
+    console.log('應用自適應設置:', settings);
+    
+    // 這裡可以根據連接質量調整不同的參數
+    // 例如，在數據通道上設置自定義屬性，供應用層參考使用
+    if (this.dataChannel) {
+      this.dataChannel.adaptiveSettings = settings;
+    }
+  }
+  
+  /**
+   * 獲取當前連接質量
+   * @returns {string} 連接質量
+   */
+  getConnectionQuality() {
+    return this.connectionQuality;
+  }
+  
+  /**
+   * 獲取連接統計信息
+   * @returns {Object|null} 連接統計信息
+   */
+  getConnectionStats() {
+    return this.connectionMonitor ? this.connectionMonitor.getStats() : null;
+  }
+  
+  /**
+   * 處理連接問題 (斷開或失敗)
+   * @param {string} type - 問題來源類型 ('ice' 或 'connection')
+   * @param {string} state - 具體狀態
+   */
+  handleConnectionIssue(type, state) {
+    // 如果連接已關閉 (close() 被調用)，不執行重連
+    if (state === 'closed' || !this.peerConnection) {
+      return;
+    }
+    
+    // 如果已經在重連中，不重複觸發
+    if (this.isReconnecting) {
+      return;
+    }
+    
+    console.log(`檢測到連接問題 (${type}): ${state}，準備嘗試重連`);
+    this.tryReconnect();
+  }
+  
+  /**
+   * 嘗試重新連接
+   */
+  tryReconnect() {
+    // 標記為重連中
+    this.isReconnecting = true;
+    this.reconnectAttempts = 0;
+    
+    // 通知外部正在重連
+    if (this.onReconnecting) {
+      this.onReconnecting();
+    }
+    
+    // 開始重連過程
+    this.scheduleReconnect();
+  }
+  
+  /**
+   * 安排下一次重連 (使用指數退避算法)
+   */
+  scheduleReconnect() {
+    // 如果超過最大重連次數，放棄重連
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      console.error(`重連失敗: 已達最大嘗試次數 (${this.maxReconnectAttempts})`);
+      this.handleReconnectFailure();
+      return;
+    }
+    
+    // 使用指數退避算法計算延遲時間
+    const delay = this.calculateBackoffDelay();
+    console.log(`安排第 ${this.reconnectAttempts + 1} 次重連，延遲 ${delay}ms`);
+    
+    // 清除之前的計時器
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    
+    // 設置新的重連計時器
+    this.reconnectTimer = setTimeout(() => {
+      this.executeReconnect();
+    }, delay);
+  }
+  
+  /**
+   * 計算退避延遲時間
+   * @returns {number} 延遲時間(毫秒)
+   */
+  calculateBackoffDelay() {
+    // 使用指數退避算法: baseDelay * 2^attempt + 隨機抖動
+    const exponentialDelay = this.reconnectBaseDelay * Math.pow(2, this.reconnectAttempts);
+    const jitter = Math.random() * 1000; // 最多1秒的隨機抖動
+    return exponentialDelay + jitter;
+  }
+  
+  /**
+   * 執行重連操作
+   */
+  async executeReconnect() {
+    try {
+      console.log(`執行第 ${this.reconnectAttempts + 1} 次重連嘗試`);
+      this.reconnectAttempts++;
+      
+      // 檢查信令客戶端連接狀態
+      if (this.signalingClient && !this.signalingClient.isConnected) {
+        // 如果信令伺服器斷開，先重連信令
+        await this.signalingClient.connect().catch(err => {
+          console.error('信令伺服器重連失敗:', err);
+          throw new Error('信令伺服器重連失敗');
+        });
+      }
+      
+      // 關閉舊連接但不重置狀態
+      this.closeConnectionsForReconnect();
+      
+      // 重新創建連接
+      this.peerConnection = new RTCPeerConnection({
+        iceServers: this.iceServers
+      });
+      
+      // 重新設置事件處理
+      this.peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          this.handleIceCandidate(event.candidate);
+        }
+      };
+      
+      // 重新設置 ICE 連接狀態變更處理
+      this.peerConnection.oniceconnectionstatechange = () => {
+        const iceState = this.peerConnection.iceConnectionState;
+        console.log('ICE 連接狀態 (重連中):', iceState);
+        
+        this.lastIceConnectionState = iceState;
+        
+        if (this.onConnectionStateChange) {
+          this.onConnectionStateChange(iceState);
+        }
+        
+        if (iceState === 'connected' || iceState === 'completed') {
+          this.handleReconnectSuccess();
+        }
+      };
+      
+      // 重新設置連接狀態變更處理
+      this.peerConnection.onconnectionstatechange = () => {
+        const connState = this.peerConnection.connectionState;
+        console.log('連接狀態 (重連中):', connState);
+        
+        this.lastConnectionState = connState;
+        
+        if (this.onConnectionStateChange) {
+          this.onConnectionStateChange(connState);
+        }
+        
+        if (connState === 'connected') {
+          this.handleReconnectSuccess();
+        } else if (connState === 'failed') {
+          // 如果這次嘗試失敗了，安排下一次重連
+          this.scheduleReconnect();
+        }
+      };
+      
+      // 如果是接收方，設置數據通道處理
+      if (!this.isInitiator) {
+        this.peerConnection.ondatachannel = (event) => {
+          this.dataChannel = event.channel;
+          this.setupDataChannel();
+        };
+      }
+      
+      // 如果是發起方，重新創建數據通道
+      if (this.isInitiator) {
+        this.createDataChannel();
+        
+        // 發送新的 Offer
+        const offer = await this.peerConnection.createOffer();
+        await this.peerConnection.setLocalDescription(offer);
+        
+        // 儲存新的本地描述
+        this.storedSessionInfo.localDescription = offer;
+        
+        // 發送 Offer 到信令伺服器
+        if (this.signalingClient) {
+          this.signalingClient.sendOffer(offer);
+          console.log('已在重連過程中發送新的 Offer');
+        }
+      }
+      
+    } catch (error) {
+      console.error('重連嘗試失敗:', error);
+      
+      // 如果這次嘗試失敗了，安排下一次重連
+      this.scheduleReconnect();
+    }
+  }
+  
+  /**
+   * 處理重連成功
+   */
+  handleReconnectSuccess() {
+    if (!this.isReconnecting) return;
+    
+    console.log('WebRTC 重連成功!');
+    this.isReconnecting = false;
+    this.reconnectAttempts = 0;
+    
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    
+    // 重新初始化連接監測器
+    if (this.enableConnectionMonitoring && this.dataChannel) {
+      this.initializeConnectionMonitor();
+    }
+    
+    // 通知外部重連成功
+    if (this.onReconnected) {
+      this.onReconnected();
+    }
+  }
+  
+  /**
+   * 處理重連失敗
+   */
+  handleReconnectFailure() {
+    console.error('WebRTC 重連最終失敗');
+    this.isReconnecting = false;
+    
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    
+    // 通知外部重連失敗
+    if (this.onReconnectFailed) {
+      this.onReconnectFailed();
+    }
+  }
+  
+  /**
+   * 為重連關閉連接，但不完全重置
+   * 不同於 close()，這個方法保留一些狀態以便重連
+   */
+  closeConnectionsForReconnect() {
+    // 關閉數據通道
+    if (this.dataChannel) {
+      this.dataChannel.close();
+      this.dataChannel = null;
+    }
+    
+    // 關閉對等連接
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+    
+    console.log('WebRTC 連接已關閉 (為重連做準備)');
   }
 }

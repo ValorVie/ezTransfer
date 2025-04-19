@@ -6,11 +6,20 @@ import { WebRTCManager } from '~/lib/webrtc';
 
 export const useConnectionStore = defineStore('connection', () => {
   // 狀態
-  const status = ref('disconnected'); // disconnected, connecting, awaiting_connection, connected, error
+  const status = ref('disconnected'); // disconnected, connecting, awaiting_connection, connected, reconnecting, error
   const isLoading = ref(false);
   const connectionCode = ref('');
   const errorMessage = ref('');
   const role = ref(''); // sender 或 receiver
+  const isReconnecting = ref(false); // 是否正在重連中
+  const reconnectAttempt = ref(0); // 當前重連嘗試次數
+  const connectionQuality = ref('unknown'); // 連接質量: excellent, good, fair, poor, critical, unknown
+  const connectionStats = reactive({ // 連接統計
+    rtt: 0,            // 往返時間(毫秒)
+    packetLoss: 0,     // 丟包率(百分比)
+    bandwidth: 0,      // 帶寬(kbps)
+    lastUpdated: null  // 最後更新時間
+  });
   
   // WebRTC 和信令相關的實例
   let signalingClient = null;
@@ -51,7 +60,10 @@ export const useConnectionStore = defineStore('connection', () => {
       
       // 創建信令客戶端（signalingUrl 會從環境變數中獲取）
       signalingClient = new SignalingClient({
-        token: wsToken
+        token: wsToken,
+        maxReconnectAttempts: 10, // 最大重連嘗試次數
+        reconnectBaseDelay: 1000, // 基礎重連延遲(毫秒)
+        heartbeatInterval: 15000 // 心跳間隔(毫秒)
       });
       
       // 設置信令事件處理器
@@ -85,7 +97,10 @@ export const useConnectionStore = defineStore('connection', () => {
       
       // 創建信令客戶端（signalingUrl 會從環境變數中獲取）
       signalingClient = new SignalingClient({
-        token: wsToken
+        token: wsToken,
+        maxReconnectAttempts: 10, // 最大重連嘗試次數
+        reconnectBaseDelay: 1000, // 基礎重連延遲(毫秒)
+        heartbeatInterval: 15000 // 心跳間隔(毫秒)
       });
       
       // 設置信令事件處理器
@@ -165,13 +180,56 @@ export const useConnectionStore = defineStore('connection', () => {
       errorMessage.value = `連接錯誤: ${error.message || '未知錯誤'}`;
       isLoading.value = false;
     };
+    
+    // 信令重連嘗試事件
+    signalingClient.onReconnecting = () => {
+      console.log('正在嘗試重新連接到信令伺服器...');
+      isReconnecting.value = true;
+      status.value = 'reconnecting';
+      errorMessage.value = '連接中斷，嘗試重新連接...';
+    };
+    
+    // 信令重連成功事件
+    signalingClient.onReconnected = () => {
+      console.log('重新連接到信令伺服器成功');
+      isReconnecting.value = false;
+      reconnectAttempt.value = 0;
+      
+      // 如果 WebRTC 連接已斷開但信令已重連，嘗試恢復 WebRTC 連接
+      if (webRTCManager && !webRTCManager.isConnected()) {
+        console.log('信令已恢復，嘗試恢復 WebRTC 連接');
+        
+        // 重新初始化 WebRTC 連接
+        if (webRTCManager.isReconnecting) {
+          console.log('WebRTC 已在重連中，不重複初始化');
+        } else {
+          console.log('重新初始化 WebRTC 連接');
+          webRTCManager.tryReconnect();
+        }
+      } else if (status.value === 'reconnecting') {
+        // 如果 WebRTC 仍然是連接的，恢復原來的狀態
+        status.value = webRTCManager && webRTCManager.isConnected() ? 'connected' : 'connecting';
+        errorMessage.value = '';
+      }
+    };
+    
+    // 信令重連失敗事件
+    signalingClient.onReconnectFailed = () => {
+      console.error('重新連接到信令伺服器失敗');
+      isReconnecting.value = false;
+      status.value = 'error';
+      errorMessage.value = '重新連接失敗，請重試';
+    };
   };
   
   // 初始化 WebRTC 連接
   const initializeWebRTC = () => {
     // 創建 WebRTC 管理器（環境變數的 iceServers 設定會在 WebRTCManager 內部處理）
     webRTCManager = new WebRTCManager({
-      isInitiator: role.value === 'sender'
+      isInitiator: role.value === 'sender',
+      maxReconnectAttempts: 5,  // 最大重連嘗試次數
+      reconnectBaseDelay: 1000,  // 基礎重連延遲(毫秒)
+      enableConnectionMonitoring: true // 啟用連接質量監測
     });
     
     // 設置 WebRTC 事件處理器
@@ -197,10 +255,15 @@ export const useConnectionStore = defineStore('connection', () => {
       if (state === 'connected') {
         status.value = 'connected';
         isLoading.value = false;
+        isReconnecting.value = false;
         errorMessage.value = '';
       } else if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-        status.value = 'disconnected';
-        errorMessage.value = '連接已斷開或失敗';
+        // 不立即更新 UI 狀態為斷開，因為可能會自動重連
+        // 只有當不在重連中或重連已經失敗時才更新狀態
+        if (!isReconnecting.value) {
+          status.value = 'disconnected';
+          errorMessage.value = '連接已斷開或失敗';
+        }
       }
     };
     
@@ -208,20 +271,78 @@ export const useConnectionStore = defineStore('connection', () => {
     webRTCManager.onDataChannelOpen = () => {
       status.value = 'connected';
       isLoading.value = false;
+      isReconnecting.value = false;
       errorMessage.value = '';
     };
     
     // 資料通道關閉
     webRTCManager.onDataChannelClose = () => {
-      status.value = 'disconnected';
-      errorMessage.value = '資料通道已關閉';
+      // 不立即更新 UI 狀態為斷開，因為可能會自動重連
+      if (!isReconnecting.value) {
+        status.value = 'disconnected';
+        errorMessage.value = '資料通道已關閉';
+      }
     };
     
     // 資料通道錯誤
     webRTCManager.onDataChannelError = (error) => {
       console.error('資料通道錯誤:', error);
+      
+      // 不立即更新 UI 狀態為錯誤，因為可能會自動重連
+      if (!isReconnecting.value) {
+        status.value = 'error';
+        errorMessage.value = `資料通道錯誤: ${error.message || '未知錯誤'}`;
+      }
+    };
+    
+    // WebRTC 重連嘗試事件
+    webRTCManager.onReconnecting = () => {
+      console.log('正在嘗試重新建立 WebRTC 連接...');
+      isReconnecting.value = true;
+      reconnectAttempt.value = webRTCManager.reconnectAttempts;
+      status.value = 'reconnecting';
+      errorMessage.value = '連接中斷，嘗試重新連接...';
+    };
+    
+    // WebRTC 重連成功事件
+    webRTCManager.onReconnected = () => {
+      console.log('重新建立 WebRTC 連接成功');
+      isReconnecting.value = false;
+      reconnectAttempt.value = 0;
+      status.value = 'connected';
+      errorMessage.value = '';
+    };
+    
+    // WebRTC 重連失敗事件
+    webRTCManager.onReconnectFailed = () => {
+      console.error('重新建立 WebRTC 連接失敗');
+      isReconnecting.value = false;
       status.value = 'error';
-      errorMessage.value = `資料通道錯誤: ${error.message || '未知錯誤'}`;
+      errorMessage.value = '重新連接失敗，請重試';
+    };
+    
+    // 連接質量變更事件
+    webRTCManager.onConnectionQualityChange = (quality, stats) => {
+      console.log(`連接質量: ${quality}`, stats);
+      connectionQuality.value = quality;
+      
+      // 更新連接統計
+      if (stats) {
+        if (stats.avgRtt !== undefined) connectionStats.rtt = stats.avgRtt;
+        if (stats.avgPacketLoss !== undefined) connectionStats.packetLoss = stats.avgPacketLoss;
+        if (stats.avgBandwidth !== undefined) connectionStats.bandwidth = stats.avgBandwidth;
+        connectionStats.lastUpdated = Date.now();
+      }
+      
+      // 如果連接質量差，向用戶顯示提示
+      if (quality === 'poor' || quality === 'critical') {
+        errorMessage.value = `連接質量${quality === 'poor' ? '較差' : '很差'}，可能會影響聊天體驗`;
+      } else if (quality === 'excellent' || quality === 'good') {
+        // 清除之前的連接質量錯誤消息
+        if (errorMessage.value && errorMessage.value.includes('連接質量')) {
+          errorMessage.value = '';
+        }
+      }
     };
   };
   
@@ -302,6 +423,10 @@ export const useConnectionStore = defineStore('connection', () => {
     connectionCode,
     errorMessage,
     role,
+    isReconnecting,
+    reconnectAttempt,
+    connectionQuality,
+    connectionStats,
     
     // 方法
     reset,
@@ -310,6 +435,10 @@ export const useConnectionStore = defineStore('connection', () => {
     disconnect,
     setRole,        // 新增：允許手動設置角色
     setStatus,      // 新增：允許手動設置狀態
+    
+    // 連接質量相關
+    getConnectionQuality: () => connectionQuality.value,
+    getConnectionStats: () => ({ ...connectionStats }),
     
     // 獲取 WebRTC 管理器 (供其他 store 使用)
     getWebRTCManager: () => webRTCManager

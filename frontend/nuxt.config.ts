@@ -12,8 +12,8 @@ export default defineNuxtConfig({
   vite: {
     server: {
       host: true,
-      allowedHosts: true, // 允許所有主機訪問
-      hmr: true  // ⛔ 關閉熱重載
+      allowedHosts: true // 允許所有主機訪問
+     // hmr: false  // ⛔ 關閉熱重載
     },
     // 移除了特定的打包配置
     plugins: process.env.NODE_ENV === 'production'

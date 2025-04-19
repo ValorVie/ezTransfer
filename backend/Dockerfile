@@ -26,4 +26,5 @@ EXPOSE 8000
 # 可以加上 --reload 參數讓 Uvicorn 自動重載程式碼變更
 # CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 # 生產環境不建議使用 --reload
+ENV PYTHONUNBUFFERED=1
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

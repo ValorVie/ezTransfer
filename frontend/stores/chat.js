@@ -136,9 +136,18 @@ export const useChatStore = defineStore('chat', () => {
     const success = messageService.sendMessage(trimmedContent, messageId);
     
     if (success) {
-      // 在這裡不添加消息到本地，因為消息會從 handleIncomingMessage 被處理
-      // 即使是自己發送的消息，也會通過 WebRTC 數據通道的 loopback 收到
-      console.log('消息發送成功，等待數據通道回送，ID:', messageId);
+      // 立即將自己發送的消息添加到本地狀態
+      const message = {
+        id: messageId,
+        content: trimmedContent,
+        timestamp: Date.now(),
+        senderRole: connectionStore.role, // 使用當前用戶的角色
+        read: true // 自己發送的消息總是已讀
+      };
+      addMessage(message); // 使用 addMessage 以便同步到其他窗口
+      console.log('消息發送成功並已添加到本地，ID:', messageId);
+    } else {
+      console.error('消息發送失敗，ID:', messageId);
     }
     
     return success;
@@ -147,7 +156,18 @@ export const useChatStore = defineStore('chat', () => {
   // 處理收到的消息
   const handleIncomingMessage = (message) => {
     if (message && message.type === 'chat_message') {
-      // 檢查是否已處理過該消息ID，避免重複
+      // 新增：檢查是否是自己發送的消息，如果是則忽略，因為已在發送時本地添加
+      if (message.senderRole === connectionStore.role) {
+        console.log(`忽略來自自己的回送消息，ID: ${message.id}`);
+        // 仍然需要記錄ID，以防萬一有其他機制導致重複
+        if (message.id && !processedMessageIds.has(message.id)) {
+           processedMessageIds.add(message.id);
+           setTimeout(() => processedMessageIds.delete(message.id), 60000);
+        }
+        return true; // 標記為已處理 (忽略)
+      }
+
+      // 檢查是否已處理過該消息ID，避免重複 (針對非自己的消息)
       if (message.id && processedMessageIds.has(message.id)) {
         console.log(`跳過已處理的消息 ID: ${message.id}`);
         return true;
@@ -163,7 +183,7 @@ export const useChatStore = defineStore('chat', () => {
         }, 60000); // 60秒後清理
       }
       
-      addMessage(message);
+      addMessage(message); // 添加來自對方的消息
       return true;
     }
     return false;

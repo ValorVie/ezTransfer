@@ -11,7 +11,8 @@ export default defineNuxtConfig({
   // Vite 配置
   vite: {
     server: {
-      host: true
+      host: true,
+      allowedHosts: true // 允許所有主機訪問
     },
     // 移除了特定的打包配置
     plugins: process.env.NODE_ENV === 'production'

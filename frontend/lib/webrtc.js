@@ -217,7 +217,7 @@ export class WebRTCManager {
     // FileHandler 中的 bufferThreshold 是 1MB (1 * 1024 * 1024)
     // 我們將此閾值設為其一半，以便在緩衝區有足夠空間時更快觸發 bufferedamountlow 事件
     try {
-      this.dataChannel.bufferedAmountLowThreshold = 5 * 1024 * 1024 ; // 5MB
+      this.dataChannel.bufferedAmountLowThreshold = 10 * 1024 * 1024 ; // 5MB
       console.log(`[WebRTCManager] Set dataChannel.bufferedAmountLowThreshold to ${this.dataChannel.bufferedAmountLowThreshold} bytes.`);
     } catch (e) {
       console.warn('[WebRTCManager] Failed to set dataChannel.bufferedAmountLowThreshold:', e);

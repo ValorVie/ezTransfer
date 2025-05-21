@@ -69,9 +69,9 @@ export class FileHandler {
     // 新增: 自適應塊大小控制
     this.adaptiveChunkSize = true; // 是否啟用自適應塊大小調整
     this.minChunkSize = 16 * 1024; // 最小塊大小 (16KB)
-    this.maxChunkSize = 512 * 1024; // 最大塊大小 (128KB)
+    this.maxChunkSize = 128 * 1024; // 最大塊大小 (128KB)
     this.currentBandwidth = 0; // 當前測量的帶寬 (bytes/s)
-    this.smoothingFactor = 0.3; // 平滑因子，用於避免帶寬測量的劇烈波動
+    this.smoothingFactor = 0.7; // 平滑因子，用於避免帶寬測量的劇烈波動
     
     // 新增: 性能測量屬性
     this.performanceStats = {
@@ -694,13 +694,14 @@ export class FileHandler {
           combinedBytesView.set(chunkBytes);
           
           // 發送組合後的 ArrayBuffer
-          console.log(`[FileHandler] Attempting to send chunk seq ${sequenceNumber}. Blob size: ${chunkBlob.size}, Combined buffer size: ${combinedBuffer.byteLength}, DC state: ${dataChannel.readyState}`);
+          console.log(`[FileHandler] Before send chunk seq ${sequenceNumber}. Blob: ${chunkBlob.size}, Buffer: ${combinedBuffer.byteLength}, DC state: ${dataChannel.readyState}, Buffered: ${dataChannel.bufferedAmount}`);
           if (dataChannel.readyState === 'open') {
             try {
               dataChannel.send(combinedBuffer);
+              console.log(`[FileHandler] After send chunk seq ${sequenceNumber}. DC state: ${dataChannel.readyState}, Buffered: ${dataChannel.bufferedAmount}`);
               resolve();
             } catch (sendError) {
-              console.error(`[FileHandler] Error during dataChannel.send for seq ${sequenceNumber} (state: ${dataChannel.readyState}):`, sendError);
+              console.error(`[FileHandler] Error during dataChannel.send for seq ${sequenceNumber} (state: ${dataChannel.readyState}, buffered: ${dataChannel.bufferedAmount}):`, sendError);
               reject(sendError);
             }
           } else {

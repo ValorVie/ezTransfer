@@ -175,15 +175,17 @@ export class WebRTCManager {
       // 配置數據通道選項
       const dataChannelOptions = {
         ordered: true,       // 保證訊息順序
-        maxRetransmits: 10   // 最大重傳次數
+        // maxRetransmits: 10, // 舊的設定
         // 注意：不能同時設置 maxRetransmits 和 maxPacketLifeTime
         // 這兩個參數是互斥的，只能使用其中一個
       };
       
       // 開發模式下可以使用更寬鬆的設置
       if (devMode) {
-        console.log('開發模式：使用寬鬆的數據通道設置');
-        dataChannelOptions.maxRetransmits = 30;
+        console.log('開發模式：使用更高的數據通道重傳設置');
+        dataChannelOptions.maxRetransmits = 50; // 開發模式使用 50 次重傳
+      } else {
+        dataChannelOptions.maxRetransmits = 30; // 非開發模式使用 30 次重傳
       }
       
       // 創建數據通道

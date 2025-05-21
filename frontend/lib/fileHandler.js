@@ -64,12 +64,12 @@ export class FileHandler {
     this.chunkSize = parseInt(config.public.chunkSize) || 64 * 1024; // 默認 64KB 的塊大小
     
     // 優化參數
-    this.bufferThreshold = 2 * 1024 * 1024; // 2MB 緩衝阈值
+    this.bufferThreshold = 2 * 1024 * 1024; // 1MB 緩衝阈值
     
     // 新增: 自適應塊大小控制
     this.adaptiveChunkSize = true; // 是否啟用自適應塊大小調整
     this.minChunkSize = 16 * 1024; // 最小塊大小 (16KB)
-    this.maxChunkSize = 256 * 1024; // 最大塊大小 (256KB)
+    this.maxChunkSize = 64 * 1024; // 最大塊大小 (64KB) - 減小以測試
     this.currentBandwidth = 0; // 當前測量的帶寬 (bytes/s)
     this.smoothingFactor = 0.3; // 平滑因子，用於避免帶寬測量的劇烈波動
     
@@ -392,6 +392,9 @@ export class FileHandler {
         this.startPerformanceMeasurement();
       }
       
+      const totalChunks = Math.ceil(file.size / this.chunkSize);
+      this.isSending = true; // 確保 isSending 設置為 true
+
       // 傳送檔案元數據
       const metadata = {
         type: 'metadata',
@@ -399,7 +402,8 @@ export class FileHandler {
         size: file.size,
         fileType: file.type,
         queueIndex: this.currentQueueIndex,
-        queueTotal: this.fileQueue.length
+        queueTotal: this.fileQueue.length,
+        totalChunks: totalChunks // <--- 確保 totalChunks 已發送
       };
       
       // 發送檔案元數據
@@ -408,6 +412,7 @@ export class FileHandler {
       // 讀取並發送檔案數據塊
       let offset = 0;
       this.sentSize = 0;
+      let sequenceNumber = 0; // <--- 初始化序號
       
       // 循環讀取檔案並發送塊
       while (offset < file.size && this.isSending) {
@@ -429,10 +434,10 @@ export class FileHandler {
         }
         
         // 計算當前塊的大小
-        const chunkSize = Math.min(this.chunkSize, file.size - offset);
+        const currentChunkSize = Math.min(this.chunkSize, file.size - offset);
         
         // 從檔案中讀取數據塊
-        const chunk = file.slice(offset, offset + chunkSize);
+        const chunkBlob = file.slice(offset, offset + currentChunkSize);
         
         // 等待數據通道的緩衝區清空到合理水平
         if (dataChannel.bufferedAmount > this.bufferThreshold) {
@@ -455,20 +460,37 @@ export class FileHandler {
         // 測量發送時間
         const sendStartTime = performance.now();
         
-        // 發送數據塊
-        await this.sendChunk(chunk, dataChannel);
+        try {
+          // 發送數據塊
+          await this.sendChunk(chunkBlob, sequenceNumber, dataChannel);
+        } catch (chunkError) {
+          console.error(`[FileHandler] Error sending chunk seq ${sequenceNumber} for ${file.name}:`, chunkError);
+          this.isSending = false; // Stop sending loop
+          if (this.onError) {
+            this.onError(chunkError, {
+              fileName: file.name,
+              queueIndex: this.currentQueueIndex,
+              sequenceNumber: sequenceNumber,
+              stage: 'sendFile_sendChunk_catch'
+            });
+          }
+          // No need to call processNextFile here, the outer catch or finally block in sendFile will handle it
+          // or the loop condition !this.isSending will terminate it.
+          break; // Exit the while loop
+        }
         
         // 記錄發送完成時間
         const sendEndTime = performance.now();
         const sendTime = sendEndTime - sendStartTime;
         
         // 記錄性能數據並調整塊大小
-        this.recordPerformanceData(chunkSize, sendTime);
+        this.recordPerformanceData(currentChunkSize, sendTime);
         this.adjustChunkSize();
         
         // 更新偏移量和已發送大小
-        offset += chunkSize;
-        this.sentSize += chunkSize;
+        offset += currentChunkSize;
+        this.sentSize += currentChunkSize;
+        sequenceNumber++; // <--- 遞增序號
         
         // 回調進度
         if (this.onProgress) {
@@ -498,37 +520,74 @@ export class FileHandler {
             size: file.size,
             type: file.type,
             queueIndex: this.currentQueueIndex,
-            queueTotal: this.fileQueue.length
+            totalQueue: this.fileQueue.length
           });
         }
         
-        // 更新隊列索引並處理下一個檔案
+        // 處理隊列中的下一個檔案
         this.currentQueueIndex++;
+        this.processNextFile(dataChannel); // 直接調用，processNextFile 會處理隊列完成的情況
         
-        // 如果還有檔案，繼續處理
-        if (this.currentQueueIndex < this.fileQueue.length) {
-          setTimeout(() => {
-            this.processNextFile(dataChannel);
-          }, 200); // 短暫延遲，避免立即處理
-        } else {
-          // 所有檔案處理完成
-          this.completePerformanceMeasurement(); // 記錄整體性能數據
-          
-          if (this.onQueueComplete) {
-            this.onQueueComplete(this.fileQueue);
-          }
+      } else {
+        // 如果傳輸被取消
+        console.log(`檔案 ${file.name} 的傳輸已被取消。`);
+        if (this.onTransferCancelled) {
+          this.onTransferCancelled({
+            name: file.name,
+            queueIndex: this.currentQueueIndex
+          });
         }
-        
-        console.log('檔案發送完成:', file.name);
+        // 即使取消，也嘗試處理下一個檔案 (如果有的話)
+        this.currentQueueIndex++; // 確保索引增加
+        this.processNextFile(dataChannel);
       }
       
-      return true;
     } catch (error) {
-      console.error('發送檔案失敗:', error);
-      if (this.onError) {
-        this.onError(error);
+      console.error(`[FileHandler] Error sending file ${file ? file.name : 'unknown file'}:`, error.message);
+      this.isSending = false;
+      this.currentState = this.transferState.FAILED;
+      
+      // Ensure file status in queue is updated if possible
+      const currentFileInQueue = this.fileQueue[this.currentQueueIndex];
+      if (file && currentFileInQueue && currentFileInQueue.name === file.name) {
+          currentFileInQueue.status = 'failed';
+          currentFileInQueue.error = error.message; // Store error message
+      } else if (file) {
+        // If the file isn't in the queue at the current index (e.g., queue structure changed or index is off)
+        // still try to log an error for the intended file.
+        console.warn(`[FileHandler] File ${file.name} (intended index ${this.currentQueueIndex}) not found or mismatched in queue for error status update.`);
       }
-      throw error;
+
+
+      if (this.onError) {
+        this.onError(error, {
+          fileName: file ? file.name : '未知檔案',
+          queueIndex: this.currentQueueIndex,
+          stage: 'sendFile_outerCatch',
+          message: error.message // Pass along the error message
+        });
+      }
+      
+      // Critical: Check if dataChannel itself is still valid before trying to use it for processNextFile
+      // If the error was due to the channel closing, processNextFile might also fail or hang.
+      if (dataChannel && dataChannel.readyState === 'open') {
+        console.log(`[FileHandler] Attempting to process next file after error with ${file ? file.name : 'unknown file'}.`);
+        this.currentQueueIndex++;
+        this.processNextFile(dataChannel);
+      } else {
+        console.error(`[FileHandler] Data channel is not open (state: ${dataChannel ? dataChannel.readyState : 'null'}) after error with ${file ? file.name : 'unknown file'}. Halting further queue processing.`);
+        // Optionally, trigger a more global queue failure event if the channel is dead.
+        if (this.onQueueComplete && this.fileQueue.length > 0) {
+            // Mark remaining files as failed if appropriate
+            for (let i = this.currentQueueIndex; i < this.fileQueue.length; i++) {
+                if (this.fileQueue[i] && this.fileQueue[i].status !== 'completed' && this.fileQueue[i].status !== 'cancelled') {
+                    this.fileQueue[i].status = 'failed';
+                    this.fileQueue[i].error = 'Data channel closed during transfer';
+                }
+            }
+            this.onQueueComplete(this.fileQueue, true); // Pass a flag indicating queue failed
+        }
+      }
     }
   }
   
@@ -556,21 +615,45 @@ export class FileHandler {
    * @param {Blob} chunk - 檔案數據塊
    * @param {RTCDataChannel} dataChannel - WebRTC 數據通道
    */
-  async sendChunk(chunk, dataChannel) {
+  async sendChunk(chunkBlob, sequenceNumber, dataChannel) {
     return new Promise((resolve, reject) => {
-      // 創建 FileReader 讀取數據塊
       const reader = new FileReader();
       
       reader.onload = (event) => {
+        const arrayBufferChunkData = event.target.result; // 原始資料塊的 ArrayBuffer
         try {
-          // 獲取數據塊的 ArrayBuffer
-          const arrayBuffer = event.target.result;
+          const headerSize = 4; // 4 位元組用於存儲 Uint32 的序號
           
-          // 發送數據塊
-          dataChannel.send(arrayBuffer);
+          // 創建組合緩衝區 (序號標頭 + 資料塊)
+          const combinedBuffer = new ArrayBuffer(headerSize + arrayBufferChunkData.byteLength);
+          const view = new DataView(combinedBuffer);
           
-          resolve();
-        } catch (error) {
+          // 寫入序號 (使用小端字節序 Little Endian)
+          // 參數: offset, value, littleEndian (true/false)
+          view.setUint32(0, sequenceNumber, true);
+          
+          // 複製原始資料塊數據到組合緩衝區中標頭之後的位置
+          const chunkBytes = new Uint8Array(arrayBufferChunkData);
+          const combinedBytesView = new Uint8Array(combinedBuffer, headerSize); // 創建一個從標頭之後開始的視圖
+          combinedBytesView.set(chunkBytes);
+          
+          // 發送組合後的 ArrayBuffer
+          console.log(`[FileHandler] Attempting to send chunk seq ${sequenceNumber}. Blob size: ${chunkBlob.size}, Combined buffer size: ${combinedBuffer.byteLength}, DC state: ${dataChannel.readyState}`);
+          if (dataChannel.readyState === 'open') {
+            try {
+              dataChannel.send(combinedBuffer);
+              resolve();
+            } catch (sendError) {
+              console.error(`[FileHandler] Error during dataChannel.send for seq ${sequenceNumber} (state: ${dataChannel.readyState}):`, sendError);
+              reject(sendError);
+            }
+          } else {
+            const errorMsg = `[FileHandler] Data channel closed before attempting send for chunk ${sequenceNumber}. State: ${dataChannel.readyState}`;
+            console.error(errorMsg);
+            reject(new Error(errorMsg));
+          }
+        } catch (error) { // Catches errors from buffer creation or FileReader result processing
+          console.error(`[FileHandler] Error processing chunk data for seq ${sequenceNumber} before send:`, error);
           reject(error);
         }
       };
@@ -579,8 +662,7 @@ export class FileHandler {
         reject(error);
       };
       
-      // 讀取數據塊為 ArrayBuffer
-      reader.readAsArrayBuffer(chunk);
+      reader.readAsArrayBuffer(chunkBlob);
     });
   }
   
@@ -594,40 +676,59 @@ export class FileHandler {
       // 保存數據通道引用，以便接收方也能發送控制訊息
       if (dataChannel && !this.dataChannel) {
         this.dataChannel = dataChannel;
-        console.log('接收方已儲存數據通道引用');
+        console.log('[FileHandler] Receiver: Stored data channel reference.');
       }
 
       // 如果是字符串或 JSON 物件，解析為元數據或控制消息
       if (typeof data === 'string') {
         const message = JSON.parse(data);
-        console.log('收到消息:', message.type);
+        console.log('[FileHandler] Received message:', message.type);
         
         if (message.type === 'metadata') {
-          // 開始接收新檔案
           this.startFileReception(message);
         } else if (message.type === 'complete') {
-          // 檔案接收完成
           this.completeFileReception(message.queueIndex);
         } else if (message.type === 'cancel') {
-          // 收到取消傳輸訊息
           this.handleCancelMessage(message);
         } else if (message.type === 'control') {
-          // 處理控制訊息（暫停/恢復）
           this.handleControlMessage(message);
         } else if (message.type === 'queue_info') {
-          // 新增：處理完整檔案隊列資訊
           this.handleQueueInfo(message);
         }
       }
       // 如果是 ArrayBuffer，則為檔案數據塊
-      else if (data instanceof ArrayBuffer && !this.isPaused) {
-        // 處理檔案數據塊 (只有在非暫停狀態下才處理)
-        this.receiveChunk(data);
+      else if (data instanceof ArrayBuffer) {
+        if (this.isPaused) {
+          console.log('[FileHandler] Received ArrayBuffer chunk while paused, ignoring. Size:', data.byteLength);
+          return;
+        }
+        // console.log('[FileHandler] Received ArrayBuffer. Type:', typeof data, 'ByteLength:', data ? data.byteLength : 'N/A');
+
+        const headerSize = 4; // 4 bytes for Uint32 sequence number
+        if (!data || data.byteLength < headerSize) {
+          console.error('[FileHandler] Received data chunk is too small or invalid. ByteLength:', data ? data.byteLength : 'N/A');
+          if (this.onError) this.onError(new Error('Received invalid data chunk (too small)'), { stage: 'handleIncomingData' });
+          return;
+        }
+
+        const view = new DataView(data);
+        const seq = view.getUint32(0, true); // true for little-endian
+        const actualChunkData = data.slice(headerSize);
+        
+        // console.log('[FileHandler] Extracted chunk data. Type:', typeof actualChunkData, 'ByteLength:', actualChunkData ? actualChunkData.byteLength : 'N/A', 'Seq:', seq);
+
+        if (typeof actualChunkData === 'undefined' || !(actualChunkData instanceof ArrayBuffer)) {
+          console.error(`[FileHandler] CRITICAL: actualChunkData is undefined or not ArrayBuffer after slice for seq ${seq}. Original data byteLength: ${data.byteLength}, actualChunkData type: ${typeof actualChunkData}`);
+          if (this.onError) this.onError(new Error('Failed to extract valid chunk data after slice'), { sequenceNumber: seq, stage: 'handleIncomingData' });
+          return;
+        }
+        
+        this.receiveChunk({ seq, data: actualChunkData });
       }
     } catch (error) {
-      console.error('處理接收數據失敗:', error);
+      console.error('[FileHandler] Error processing incoming data:', error);
       if (this.onError) {
-        this.onError(error);
+        this.onError(error, { stage: 'handleIncomingData_outerCatch' });
       }
     }
   }
@@ -637,53 +738,81 @@ export class FileHandler {
    * @param {Object} metadata - 檔案元數據
    */
   startFileReception(metadata) {
-    // 初始化接收狀態
+    console.log('[FileHandler] Starting file reception. Metadata:', JSON.stringify(metadata));
     this.isReceiving = true;
     this.receivedSize = 0;
     this.fileSize = metadata.size;
     this.fileName = metadata.name;
     this.fileType = metadata.fileType;
-    this.fileChunks = [];
     
+    this.totalFileChunks = Number(metadata.totalChunks);
+    if (isNaN(this.totalFileChunks) || this.totalFileChunks <= 0) {
+      console.warn(`[FileHandler] Invalid or missing totalChunks in metadata for ${this.fileName}. Received: ${metadata.totalChunks}. Calculating based on size.`);
+      this.totalFileChunks = (this.fileSize > 0) ? Math.max(1, Math.ceil(this.fileSize / this.chunkSize)) : 0;
+      if (isNaN(this.totalFileChunks) || this.totalFileChunks < 0) {
+          console.error(`[FileHandler] CRITICAL: Could not determine a valid totalFileChunks for ${this.fileName}. Size: ${this.fileSize}. Calculated totalChunks: ${this.totalFileChunks}`);
+          this.totalFileChunks = 0; // Final fallback
+          if (this.onError) this.onError(new Error('Invalid totalChunks in metadata'), {fileName: this.fileName, metadata, stage: 'startFileReception'});
+      }
+    }
+
+    this.receivedChunkCount = 0;
+    this.fileChunks = new Array(this.totalFileChunks || 0); // Initialize with correct length or empty if 0 chunks
+    console.log(`[FileHandler] Initialized for ${this.fileName}: totalFileChunks = ${this.totalFileChunks}, receivedChunkCount = ${this.receivedChunkCount}, fileChunks array length: ${this.fileChunks.length}`);
+
     // 設置隊列相關資訊
     if (metadata.queueIndex !== undefined) {
       this.currentQueueIndex = metadata.queueIndex;
-      
-      // 如果隊列為空但收到隊列資訊，初始化隊列結構
-      if (this.fileQueue.length === 0 && metadata.queueTotal) {
-        this.fileQueue = Array(metadata.queueTotal).fill(null);
-        this.fileQueue[metadata.queueIndex] = {
-          name: metadata.name,
-          size: metadata.size,
-          type: metadata.fileType
-        };
+      // Ensure fileQueue entry exists if receiving metadata for a specific file
+      if (this.fileQueue[metadata.queueIndex] === undefined || this.fileQueue[metadata.queueIndex] === null) {
+         if (this.fileQueue.length === 0 && metadata.queueTotal) { // If queue was empty, initialize based on queueTotal
+            this.fileQueue = Array(metadata.queueTotal).fill(null);
+         }
+         // Ensure the specific slot is an object
+         this.fileQueue[metadata.queueIndex] = this.fileQueue[metadata.queueIndex] || {};
+         Object.assign(this.fileQueue[metadata.queueIndex], {
+            name: metadata.name,
+            size: metadata.size,
+            type: metadata.fileType,
+            totalChunks: this.totalFileChunks, // Store for UI if needed
+            receivedSize: 0,
+            receivedChunkCount: 0,
+            status: 'receiving'
+         });
+      } else { // File entry might exist from queue_info, update it
+         Object.assign(this.fileQueue[metadata.queueIndex], {
+            totalChunks: this.totalFileChunks,
+            receivedSize: 0, // Reset for this specific file reception
+            receivedChunkCount: 0, // Reset for this specific file reception
+            status: 'receiving'
+         });
       }
     }
     
-    // 檔案接收開始時啟動性能測量
-    if (this.currentQueueIndex === 0) {
+    // 檔案接收開始時啟動性能測量 (only for the first file in a potential queue)
+    if (this.currentQueueIndex === 0 && (!this.performanceStats || this.performanceStats.startTime === 0)) {
       this.startPerformanceMeasurement();
     }
     
-    console.log('開始接收檔案:', this.fileName, '大小:', this.fileSize);
+    console.log('[FileHandler] Ready to receive file:', this.fileName, 'Size:', this.fileSize, 'Total Chunks:', this.totalFileChunks);
     
-    // 回調接收開始事件
     if (this.onReceiveStart) {
       this.onReceiveStart({
         name: this.fileName,
         size: this.fileSize,
         type: this.fileType,
         queueIndex: this.currentQueueIndex,
-        queueTotal: this.fileQueue.length
+        queueTotal: this.fileQueue.length,
+        totalChunks: this.totalFileChunks
       });
     }
     
-    // 回調檔案開始事件
-    if (this.onFileStart) {
+    if (this.onFileStart) { // This might be redundant if onReceiveStart covers it
       this.onFileStart({
         name: this.fileName,
         size: this.fileSize,
-        type: this.fileType
+        type: this.fileType,
+        totalChunks: this.totalFileChunks
       }, this.currentQueueIndex, this.fileQueue.length);
     }
   }
@@ -692,29 +821,63 @@ export class FileHandler {
    * 接收檔案數據塊
    * @param {ArrayBuffer} chunk - 檔案數據塊
    */
-  receiveChunk(chunk) {
-    if (!this.isReceiving) return;
-    
-    // 記錄接收開始時間 (用於性能測量)
-    const receiveStartTime = performance.now();
-    
-    // 添加數據塊到隊列
-    this.fileChunks.push(chunk);
-    
-    // 更新接收大小
-    this.receivedSize += chunk.byteLength;
-    
-    // 記錄接收完成時間和性能數據
-    const receiveEndTime = performance.now();
-    this.recordPerformanceData(chunk.byteLength, receiveEndTime - receiveStartTime);
-    
-    // 回調進度更新
-    if (this.onProgress) {
-      this.onProgress(this.receivedSize, this.fileSize);
+  receiveChunk(chunkObject) { // chunkObject is { seq, data: ArrayBuffer }
+    if (!chunkObject || typeof chunkObject.data === 'undefined') {
+      console.error('[FileHandler] CRITICAL: receiveChunk called with invalid chunkObject or undefined data. Seq:', chunkObject ? chunkObject.seq : 'N/A');
+      if (this.onError) this.onError(new Error('Received undefined chunk data'), {fileName: this.fileName, sequenceNumber: chunkObject ? chunkObject.seq : 'N/A', stage: 'receiveChunk_guard'});
+      return;
+    }
+
+    if (!(chunkObject.data instanceof ArrayBuffer)) {
+      console.error('[FileHandler] CRITICAL: chunkObject.data is not an ArrayBuffer. Type:', typeof chunkObject.data, 'Seq:', chunkObject.seq);
+       if (this.onError) this.onError(new Error('Received chunk data is not ArrayBuffer'), {fileName: this.fileName, sequenceNumber: chunkObject.seq, stage: 'receiveChunk_type_check'});
+      return;
     }
     
-    // 更新整體隊列進度
-    this.updateQueueProgress(this.receivedSize);
+    const { seq, data } = chunkObject;
+
+    if (!this.isReceiving || this.isPaused) {
+      console.warn(`[FileHandler] Ignoring chunk seq ${seq} for ${this.fileName} because not receiving or paused. isReceiving: ${this.isReceiving}, isPaused: ${this.isPaused}`);
+      return;
+    }
+    
+    try {
+      if (seq >= this.totalFileChunks) {
+        console.error(`[FileHandler] Received chunk with sequence number ${seq} out of bounds for ${this.fileName}. Expected max ${this.totalFileChunks - 1}.`);
+        if (this.onError) this.onError(new Error('Received chunk with out-of-bounds sequence number'), {fileName: this.fileName, sequenceNumber: seq, totalChunks: this.totalFileChunks, stage: 'receiveChunk_bounds'});
+        return;
+      }
+
+      if (this.fileChunks[seq] === undefined) {
+        this.fileChunks[seq] = data;
+        this.receivedChunkCount++; // Increment only for new chunks
+        this.receivedSize += data.byteLength;
+        
+        // console.log(`[FileHandler] Chunk ${seq}/${this.totalFileChunks - 1} received for ${this.fileName}. Size: ${data.byteLength}. Total received: ${this.receivedSize}/${this.fileSize}. Count: ${this.receivedChunkCount}/${this.totalFileChunks}`);
+
+        if (this.fileQueue[this.currentQueueIndex]) {
+          this.fileQueue[this.currentQueueIndex].receivedSize = this.receivedSize;
+          this.fileQueue[this.currentQueueIndex].receivedChunkCount = this.receivedChunkCount;
+        }
+        
+        if (this.onProgress) {
+          this.onProgress(this.receivedSize, this.fileSize, this.receivedChunkCount, this.totalFileChunks);
+        }
+        
+        this.updateQueueProgress(this.receivedSize); // This uses this.processedQueueSize + current file progress
+        
+        // For performance, actual processing time is negligible here, focus on throughput.
+        // this.recordPerformanceData(data.byteLength, 1); // Minimal time assumption
+      } else {
+        console.warn(`[FileHandler] Duplicate chunk seq ${seq} received for ${this.fileName}. Ignoring.`);
+      }
+      
+    } catch (error) {
+      console.error(`[FileHandler] Error processing received chunk seq ${seq} for ${this.fileName}:`, error);
+      if (this.onError) {
+        this.onError(error, { fileName: this.fileName, sequenceNumber: seq, stage: 'receiveChunk_innerCatch' });
+      }
+    }
   }
   
   /**
@@ -722,40 +885,129 @@ export class FileHandler {
    * @param {number} queueIndex - 檔案在隊列中的索引
    */
   completeFileReception(queueIndex) {
-    if (!this.isReceiving) return;
-    
-    console.log('檔案接收完成:', this.fileName, '大小:', this.receivedSize);
-    
-    // 檢查接收大小是否正確
-    if (this.receivedSize !== this.fileSize) {
-      console.warn('接收大小與檔案大小不符:', this.receivedSize, '!=', this.fileSize);
+    if (!this.isReceiving) {
+      console.warn(`嘗試完成檔案接收，但目前不在接收狀態。隊列索引: ${queueIndex}`);
+      return;
     }
     
-    // 合併所有數據塊
-    const fileData = new Blob(this.fileChunks, { type: this.fileType || 'application/octet-stream' });
-    
-    // 更新已處理的大小
-    this.processedQueueSize += this.fileSize;
-    
-    // 回調接收完成事件
-    if (this.onReceiveComplete) {
-      this.onReceiveComplete({
-        name: this.fileName,
-        size: this.fileSize,
-        type: this.fileType,
-        blob: fileData,
-        queueIndex: this.currentQueueIndex
-      });
+    // 確保是當前正在處理的檔案完成
+    if (queueIndex !== this.currentQueueIndex) {
+      console.warn(`收到非當前處理檔案的完成信號。期望索引: ${this.currentQueueIndex}, 收到: ${queueIndex}`);
+      return;
     }
     
-    // 如果是最後一個檔案，完成性能測量
-    if (queueIndex === this.fileQueue.length - 1) {
-      this.completePerformanceMeasurement();
+    console.log(`[FileHandler] Checking chunk completion for ${this.fileName} (Q_idx ${queueIndex}). Received: ${this.receivedChunkCount}, Expected: ${this.totalFileChunks}`);
+    // 檢查 receivedChunkCount 和 totalFileChunks
+    if (this.receivedChunkCount !== this.totalFileChunks) {
+      // 當啟用自適應塊大小時，totalFileChunks 可能與實際接收的塊數不同。
+      // 這不一定表示錯誤，只要所有數據都已接收。
+      // 後續的文件大小驗證將是最終的檢查。
+      console.warn(`檔案 ${this.fileName} (隊列索引 ${queueIndex}) 接收到的塊數 (${this.receivedChunkCount}) 與元數據中的預期塊數 (${this.totalFileChunks}) 不符。這在自適應塊大小調整時是正常的。將繼續進行檔案組裝和大小驗證。`);
+    }
+
+    // 日誌：檢查 receivedChunkCount 和 fileChunks 狀態 (這是我們之前嘗試添加的，現在應該能執行到)
+    console.log(`[FileHandler] Before checking missing chunks. receivedChunkCount: ${this.receivedChunkCount}, fileChunks.length: ${this.fileChunks.length}`);
+    const undefinedIndices = [];
+    for (let k = 0; k < Math.min(this.receivedChunkCount, this.fileChunks.length); k++) {
+      if (this.fileChunks[k] === undefined) {
+        undefinedIndices.push(k);
+      }
+      if (undefinedIndices.length >= 10) break;
+    }
+    if (undefinedIndices.length > 0) {
+      console.log(`[FileHandler] Indices in fileChunks (up to receivedChunkCount) that are undefined: ${undefinedIndices.join(', ')}`);
     }
     
-    // 重置接收狀態
+    // 遍歷 this.fileChunks 陣列，確保 0 到 this.receivedChunkCount - 1 的所有索引都有資料
+    // 當使用自適應塊大小時，this.receivedChunkCount 是實際接收到的塊數。
+    for (let i = 0; i < this.receivedChunkCount; i++) {
+      if (this.fileChunks[i] === undefined) {
+        console.error(`檔案 ${this.fileName} (隊列索引 ${queueIndex}) 缺少塊序號 ${i}! 檔案損壞.`);
+        if (this.onError) {
+          this.onError(new Error(`缺少塊序號 ${i}`), {
+            fileName: this.fileName,
+            missingChunkIndex: i,
+            queueIndex: queueIndex
+          });
+        }
+        this.isReceiving = false;
+        this.currentState = this.transferState.FAILED;
+        if (this.fileQueue[queueIndex]) {
+          this.fileQueue[queueIndex].status = 'failed';
+        }
+        this.currentQueueIndex++;
+        this.processNextFile(this.dataChannel);
+        return;
+      }
+    }
+    
+    console.log(`檔案 ${this.fileName} (隊列索引 ${queueIndex}) 所有塊接收完成，總大小: ${this.receivedSize}`);
     this.isReceiving = false;
-    this.fileChunks = [];
+    this.currentState = this.transferState.COMPLETED; // 標記為完成
+    
+    try {
+      // 日誌：檢查 fileChunks 狀態
+      console.log(`[FileHandler] Preparing to create Blob. fileChunks.length: ${this.fileChunks.length}. First chunk is ArrayBuffer: ${this.fileChunks[0] instanceof ArrayBuffer}`);
+      
+      // 合併所有接收到的數據塊
+      // 重要：只使用實際接收到的塊 (0 到 receivedChunkCount - 1)
+      const actualFileChunks = this.fileChunks.slice(0, this.receivedChunkCount);
+      const receivedFile = new Blob(actualFileChunks, { type: this.fileType });
+      
+      // 日誌：比較 Blob 大小和預期文件大小
+      console.log(`[FileHandler] Blob created. receivedFile.size: ${receivedFile.size}, this.fileSize (expected): ${this.fileSize}`);
+      
+      // 檢查檔案大小是否匹配 (可選，因為塊檢查更嚴格)
+      if (receivedFile.size !== this.fileSize) {
+        console.warn(`檔案大小不匹配! 期望: ${this.fileSize}, 實際: ${receivedFile.size}. 總塊數: ${this.totalFileChunks}, 接收塊數: ${this.receivedChunkCount}`);
+        // 可以在這裡觸發錯誤或警告
+        if (this.onError) {
+          this.onError(new Error('檔案大小不匹配'), {
+            fileName: this.fileName,
+            expectedSize: this.fileSize,
+            actualSize: receivedFile.size
+          });
+        }
+      }
+      
+      // 更新已處理的隊列大小
+      this.processedQueueSize += this.fileSize;
+      
+      // 更新 fileQueue 中對應檔案的狀態
+      if (this.fileQueue[queueIndex]) {
+        this.fileQueue[queueIndex].status = 'completed';
+        this.fileQueue[queueIndex].blob = receivedFile; // 可以選擇存儲 Blob
+      }
+      
+      // 觸發接收完成事件
+      if (this.onReceiveComplete) {
+        console.log(`[FileHandler] Triggering onReceiveComplete for ${this.fileName}`);
+        this.onReceiveComplete({
+          name: this.fileName,
+          size: receivedFile.size,
+          type: this.fileType,
+          blob: receivedFile,
+          queueIndex: queueIndex,
+          queueTotal: this.fileQueue.length
+        });
+      }
+      
+      // 重置部分狀態為下一個檔案準備 (大部分狀態在 startFileReception 中重置)
+      this.fileChunks = [];
+      this.totalFileChunks = 0;
+      this.receivedChunkCount = 0;
+      
+      // 處理隊列中的下一個檔案
+      this.currentQueueIndex++;
+      this.processNextFile(this.dataChannel); // 確保傳遞 dataChannel
+      
+    } catch (error) {
+      console.error('合併檔案失敗:', error);
+      this.currentState = this.transferState.FAILED;
+      if (this.onError) {
+        this.onError(error, { fileName: this.fileName, stage: 'completeFileReception' });
+      }
+    }
   }
   
   /**

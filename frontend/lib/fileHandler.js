@@ -239,7 +239,7 @@ export class FileHandler {
     if (!this.adaptiveChunkSize || this.currentBandwidth <= 0) return;
     
     // 目標：確保每個塊的傳輸時間在合理範圍內 (約 100ms)
-    const targetTime = 0.1; // 理想傳輸時間 (秒)
+    const targetTime = 0.05; // 理想傳輸時間 (秒)
     const idealChunkSize = this.currentBandwidth * targetTime;
     
     // 平滑調整：避免大幅波動

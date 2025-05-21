@@ -439,6 +439,14 @@ export class FileHandler {
       let offset = 0;
       this.sentSize = 0;
       let sequenceNumber = 0; // <--- 初始化序號
+      let nextChunkSlice = null; // 用於存放下一個 Blob 切片
+      let currentChunkBlob = null; // 當前要處理的 Blob
+
+      // 預讀第一個塊 (如果檔案存在且正在發送)
+      if (offset < file.size && this.isSending) {
+        const firstChunkSize = Math.min(this.chunkSize, file.size - offset);
+        nextChunkSlice = file.slice(offset, offset + firstChunkSize);
+      }
       
       // 循環讀取檔案並發送塊
       while (offset < file.size && this.isSending) {
@@ -459,53 +467,55 @@ export class FileHandler {
           if (!this.isSending) break;
         }
         
-        // 計算當前塊的大小
-        const currentChunkSize = Math.min(this.chunkSize, file.size - offset);
+        // 1. 將預讀的塊賦值給當前塊
+        currentChunkBlob = nextChunkSlice;
+        if (!currentChunkBlob) { // 理論上如果 offset < file.size 且 isSending，這裡不應為 null
+             console.warn(`[FileHandler] currentChunkBlob is null for ${file.name} at offset ${offset}. This might indicate an issue.`);
+             break; // Or handle error appropriately
+        }
+        const actualCurrentChunkSize = currentChunkBlob.size;
+
+        // 2. 預讀下一個塊 (如果還有數據)
+        const nextOffset = offset + actualCurrentChunkSize;
+        if (nextOffset < file.size && this.isSending) {
+          const nextSliceSize = Math.min(this.chunkSize, file.size - nextOffset);
+          nextChunkSlice = file.slice(nextOffset, nextOffset + nextSliceSize);
+        } else {
+          nextChunkSlice = null; // 沒有更多塊了
+        }
         
-        // 從檔案中讀取數據塊
-        const chunkBlob = file.slice(offset, offset + currentChunkSize);
-        
-        // 等待數據通道的緩衝區清空到合理水平
+        // 3. 等待數據通道的緩衝區清空到合理水平
         if (dataChannel.bufferedAmount > this.bufferThreshold) {
           if (this.webRTCManagerInstance && typeof this.webRTCManagerInstance.onDataChannelBufferedAmountLow === 'function') {
-            console.log(`[FileHandler] Buffer full (${dataChannel.bufferedAmount} > ${this.bufferThreshold}), waiting for bufferedamountlow event...`);
-            
-            // 檢查是否已經有一個正在等待的 Promise
+            // console.log(`[FileHandler] Buffer full (${dataChannel.bufferedAmount} > ${this.bufferThreshold}), waiting for bufferedamountlow event...`);
             if (!this._bufferedAmountLowResolve) {
-              const waitPromise = new Promise(resolve => {
-                this._bufferedAmountLowResolve = resolve;
-              });
-              // 安全超時，以防事件因故未觸發
+              const waitPromise = new Promise(resolve => { this._bufferedAmountLowResolve = resolve; });
               const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => {
-                  if (this._bufferedAmountLowResolve) { // 只有在尚未解決時才 reject
+                  if (this._bufferedAmountLowResolve) {
                     reject(new Error('Timeout waiting for bufferedamountlow event'));
                   }
-                }, 10000) // 10 秒超時
+                }, 10000)
               );
-
               try {
                 await Promise.race([waitPromise, timeoutPromise]);
               } catch (e) {
                 console.warn(`[FileHandler] ${e.message}. Continuing, but this might indicate an issue.`);
               } finally {
-                // 無論成功、失敗或超時，都清除 resolve 回調
                 this._bufferedAmountLowResolve = null;
               }
             } else {
-              // 如果已經在等待，則短暫延遲，避免重複創建 Promise
-              console.log('[FileHandler] Already waiting for bufferedamountlow, delaying slightly.');
+              // console.log('[FileHandler] Already waiting for bufferedamountlow, delaying slightly.');
               await new Promise(resolve => setTimeout(resolve, 50));
             }
-
-            if (!this.isSending) { // 檢查在等待後是否仍處於發送狀態
-              console.log('[FileHandler] Sending cancelled while waiting for buffer.');
+            if (!this.isSending) {
+              // console.log('[FileHandler] Sending cancelled while waiting for buffer.');
               break;
             }
-            console.log('[FileHandler] Buffer has space or timeout/error, resuming send.');
+            // console.log('[FileHandler] Buffer has space or timeout/error, resuming send.');
           } else {
             console.warn('[FileHandler] WebRTCManager instance or onDataChannelBufferedAmountLow callback not available. Using a short timeout as fallback.');
-            await new Promise(resolve => setTimeout(resolve, 100)); // 簡單的回退機制
+            await new Promise(resolve => setTimeout(resolve, 100));
           }
         }
         
@@ -513,15 +523,13 @@ export class FileHandler {
         if (!this.isSending) break;
         if (this.isPaused) continue;
         
-        // 測量發送時間
+        // 4. 發送當前塊
         const sendStartTime = performance.now();
-        
         try {
-          // 發送數據塊
-          await this.sendChunk(chunkBlob, sequenceNumber, dataChannel);
+          await this.sendChunk(currentChunkBlob, sequenceNumber, dataChannel);
         } catch (chunkError) {
           console.error(`[FileHandler] Error sending chunk seq ${sequenceNumber} for ${file.name}:`, chunkError);
-          this.isSending = false; // Stop sending loop
+          this.isSending = false;
           if (this.onError) {
             this.onError(chunkError, {
               fileName: file.name,
@@ -530,31 +538,32 @@ export class FileHandler {
               stage: 'sendFile_sendChunk_catch'
             });
           }
-          // No need to call processNextFile here, the outer catch or finally block in sendFile will handle it
-          // or the loop condition !this.isSending will terminate it.
-          break; // Exit the while loop
+          break;
         }
-        
-        // 記錄發送完成時間
         const sendEndTime = performance.now();
         const sendTime = sendEndTime - sendStartTime;
         
-        // 記錄性能數據並調整塊大小
-        this.recordPerformanceData(currentChunkSize, sendTime);
+        // 5. 記錄性能數據並調整塊大小
+        this.recordPerformanceData(actualCurrentChunkSize, sendTime);
         this.adjustChunkSize();
         
-        // 更新偏移量和已發送大小
-        offset += currentChunkSize;
-        this.sentSize += currentChunkSize;
-        sequenceNumber++; // <--- 遞增序號
+        // 6. 更新偏移量和已發送大小
+        offset += actualCurrentChunkSize;
+        this.sentSize += actualCurrentChunkSize;
+        sequenceNumber++;
         
-        // 回調進度
+        // 7. 回調進度
         if (this.onProgress) {
           this.onProgress(this.sentSize, file.size);
         }
         
-        // 更新整體隊列進度
+        // 8. 更新整體隊列進度
         this.updateQueueProgress(this.sentSize);
+
+        // 如果 nextChunkSlice 為 null 且 offset >= file.size，表示這是最後一塊且已處理
+        if (!nextChunkSlice && offset >= file.size) {
+            break;
+        }
       }
       
       // 如果傳輸未被取消，發送完成訊息
@@ -672,55 +681,37 @@ export class FileHandler {
    * @param {RTCDataChannel} dataChannel - WebRTC 數據通道
    */
   async sendChunk(chunkBlob, sequenceNumber, dataChannel) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      
-      reader.onload = (event) => {
-        const arrayBufferChunkData = event.target.result; // 原始資料塊的 ArrayBuffer
-        try {
-          const headerSize = 4; // 4 位元組用於存儲 Uint32 的序號
-          
-          // 創建組合緩衝區 (序號標頭 + 資料塊)
-          const combinedBuffer = new ArrayBuffer(headerSize + arrayBufferChunkData.byteLength);
-          const view = new DataView(combinedBuffer);
-          
-          // 寫入序號 (使用小端字節序 Little Endian)
-          // 參數: offset, value, littleEndian (true/false)
-          view.setUint32(0, sequenceNumber, true);
-          
-          // 複製原始資料塊數據到組合緩衝區中標頭之後的位置
-          const chunkBytes = new Uint8Array(arrayBufferChunkData);
-          const combinedBytesView = new Uint8Array(combinedBuffer, headerSize); // 創建一個從標頭之後開始的視圖
-          combinedBytesView.set(chunkBytes);
-          
-          // 發送組合後的 ArrayBuffer
-          console.log(`[FileHandler] Before send chunk seq ${sequenceNumber}. Blob: ${chunkBlob.size}, Buffer: ${combinedBuffer.byteLength}, DC state: ${dataChannel.readyState}, Buffered: ${dataChannel.bufferedAmount}`);
-          if (dataChannel.readyState === 'open') {
-            try {
-              dataChannel.send(combinedBuffer);
-              console.log(`[FileHandler] After send chunk seq ${sequenceNumber}. DC state: ${dataChannel.readyState}, Buffered: ${dataChannel.bufferedAmount}`);
-              resolve();
-            } catch (sendError) {
-              console.error(`[FileHandler] Error during dataChannel.send for seq ${sequenceNumber} (state: ${dataChannel.readyState}, buffered: ${dataChannel.bufferedAmount}):`, sendError);
-              reject(sendError);
-            }
-          } else {
-            const errorMsg = `[FileHandler] Data channel closed before attempting send for chunk ${sequenceNumber}. State: ${dataChannel.readyState}`;
-            console.error(errorMsg);
-            reject(new Error(errorMsg));
-          }
-        } catch (error) { // Catches errors from buffer creation or FileReader result processing
-          console.error(`[FileHandler] Error processing chunk data for seq ${sequenceNumber} before send:`, error);
-          reject(error);
-        }
-      };
-      
-      reader.onerror = (error) => {
-        reject(error);
-      };
-      
-      reader.readAsArrayBuffer(chunkBlob);
-    });
+    try {
+      const arrayBufferChunkData = await chunkBlob.arrayBuffer(); // 使用 Blob.arrayBuffer()
+      const headerSize = 2; // 2 位元組用於存儲 Uint16 的序號
+
+      // 創建組合緩衝區 (序號標頭 + 資料塊)
+      const combinedBuffer = new ArrayBuffer(headerSize + arrayBufferChunkData.byteLength);
+      const view = new DataView(combinedBuffer);
+
+      // 寫入序號 (使用小端字節序 Little Endian)
+      view.setUint16(0, sequenceNumber, true); // 使用 Uint16
+
+      // 複製原始資料塊數據到組合緩衝區中標頭之後的位置
+      const chunkBytes = new Uint8Array(arrayBufferChunkData);
+      const combinedBytesView = new Uint8Array(combinedBuffer, headerSize); // 創建一個從標頭之後開始的視圖
+      combinedBytesView.set(chunkBytes);
+
+      // 發送組合後的 ArrayBuffer
+      // console.log(`[FileHandler] Before send chunk seq ${sequenceNumber}. Blob: ${chunkBlob.size}, Buffer: ${combinedBuffer.byteLength}, DC state: ${dataChannel.readyState}, Buffered: ${dataChannel.bufferedAmount}`);
+      if (dataChannel.readyState === 'open') {
+        dataChannel.send(combinedBuffer);
+        // console.log(`[FileHandler] After send chunk seq ${sequenceNumber}. DC state: ${dataChannel.readyState}, Buffered: ${dataChannel.bufferedAmount}`);
+        // Promise 會隱式 resolve
+      } else {
+        const errorMsg = `[FileHandler] Data channel closed before attempting send for chunk ${sequenceNumber}. State: ${dataChannel.readyState}`;
+        console.error(errorMsg);
+        throw new Error(errorMsg);
+      }
+    } catch (error) {
+      console.error(`[FileHandler] Error processing/sending chunk data for seq ${sequenceNumber}:`, error);
+      throw error; // 重新拋出錯誤，以便外部捕獲
+    }
   }
   
   /**
@@ -761,7 +752,7 @@ export class FileHandler {
         }
         // console.log('[FileHandler] Received ArrayBuffer. Type:', typeof data, 'ByteLength:', data ? data.byteLength : 'N/A');
 
-        const headerSize = 4; // 4 bytes for Uint32 sequence number
+        const headerSize = 2; // 2 bytes for Uint16 sequence number
         if (!data || data.byteLength < headerSize) {
           console.error('[FileHandler] Received data chunk is too small or invalid. ByteLength:', data ? data.byteLength : 'N/A');
           if (this.onError) this.onError(new Error('Received invalid data chunk (too small)'), { stage: 'handleIncomingData' });
@@ -769,13 +760,13 @@ export class FileHandler {
         }
 
         const view = new DataView(data);
-        const seq = view.getUint32(0, true); // true for little-endian
+        const seq = view.getUint16(0, true); // true for little-endian, 使用 Uint16
         // const actualChunkData = data.slice(headerSize); // REMOVED: Avoid slice
         
         // console.log('[FileHandler] Extracted sequence number. Seq:', seq, 'Original buffer length:', data.byteLength);
 
         // Pass the original buffer and the offset to receiveChunk
-        this.receiveChunk({ seq, originalBuffer: data, offset: headerSize });
+        this.receiveChunk({ seq, originalBuffer: data, offset: headerSize }); // offset is now 2
       }
     } catch (error) {
       console.error('[FileHandler] Error processing incoming data:', error);

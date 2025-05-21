@@ -64,12 +64,12 @@ export class FileHandler {
     this.chunkSize = parseInt(config.public.chunkSize) || 64 * 1024; // 默認 64KB 的塊大小
     
     // 優化參數
-    this.bufferThreshold = 2 * 1024 * 1024; // 1MB 緩衝阈值
+    this.bufferThreshold = 1 * 1024 * 1024; // 2MB 緩衝阈值
     
     // 新增: 自適應塊大小控制
     this.adaptiveChunkSize = true; // 是否啟用自適應塊大小調整
     this.minChunkSize = 16 * 1024; // 最小塊大小 (16KB)
-    this.maxChunkSize = 64 * 1024; // 最大塊大小 (64KB) - 減小以測試
+    this.maxChunkSize = 128 * 1024; // 最大塊大小 (128KB)
     this.currentBandwidth = 0; // 當前測量的帶寬 (bytes/s)
     this.smoothingFactor = 0.3; // 平滑因子，用於避免帶寬測量的劇烈波動
     

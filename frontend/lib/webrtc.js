@@ -47,6 +47,7 @@ export class WebRTCManager {
     this.onDataChannelClose = null;      // 當數據通道關閉時
     this.onDataChannelMessage = null;    // 當數據通道接收訊息時
     this.onDataChannelError = null;      // 當數據通道發生錯誤時
+    this.onDataChannelBufferedAmountLow = null; // 新增：當數據通道緩衝區水位降低時
     this.onConnectionStateChange = null; // 當連接狀態變更時
     this.onReconnecting = null;          // 當嘗試重新連接時
     this.onReconnected = null;           // 當重新連接成功時
@@ -211,6 +212,17 @@ export class WebRTCManager {
    */
   setupDataChannel() {
     if (!this.dataChannel) return;
+
+    // 設定 bufferedAmountLowThreshold 以優化吞吐量
+    // FileHandler 中的 bufferThreshold 是 1MB (1 * 1024 * 1024)
+    // 我們將此閾值設為其一半，以便在緩衝區有足夠空間時更快觸發 bufferedamountlow 事件
+    try {
+      this.dataChannel.bufferedAmountLowThreshold = 5 * 1024 * 1024 ; // 5MB
+      console.log(`[WebRTCManager] Set dataChannel.bufferedAmountLowThreshold to ${this.dataChannel.bufferedAmountLowThreshold} bytes.`);
+    } catch (e) {
+      console.warn('[WebRTCManager] Failed to set dataChannel.bufferedAmountLowThreshold:', e);
+      // 某些瀏覽器或舊版本可能不支持此屬性，或者在特定狀態下不允許設置
+    }
     
     // 數據通道開啟
     this.dataChannel.onopen = () => {
@@ -252,6 +264,14 @@ export class WebRTCManager {
       console.error('數據通道錯誤:', error);
       if (this.onDataChannelError) {
         this.onDataChannelError(error);
+      }
+    };
+
+    // 新增：數據通道緩衝區水位降低
+    this.dataChannel.onbufferedamountlow = () => {
+      console.log('數據通道緩衝區水位降低 (bufferedamountlow)');
+      if (this.onDataChannelBufferedAmountLow) {
+        this.onDataChannelBufferedAmountLow();
       }
     };
   }

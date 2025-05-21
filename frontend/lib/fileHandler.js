@@ -64,7 +64,7 @@ export class FileHandler {
     this.chunkSize = parseInt(config.public.chunkSize) || 64 * 1024; // 默認 64KB 的塊大小
     
     // 優化參數
-    this.bufferThreshold = 1 * 1024 * 1024; // 2MB 緩衝阈值
+    this.bufferThreshold = 10 * 1024 * 1024; // 10MB 緩衝阈值
     
     // 新增: 自適應塊大小控制
     this.adaptiveChunkSize = true; // 是否啟用自適應塊大小調整
@@ -83,6 +83,9 @@ export class FileHandler {
       recentSpeeds: [], // 最近幾次傳輸速度的記錄
       bottlenecks: [] // 傳輸瓶頸記錄
     };
+
+    this.webRTCManagerInstance = null; // 用於儲存 WebRTCManager 實例
+    this._bufferedAmountLowResolve = null; // 用於解析等待 buffer 降低的 Promise
   }
   
   /**
@@ -99,11 +102,28 @@ export class FileHandler {
   /**
    * 開始處理檔案隊列
    * @param {RTCDataChannel} dataChannel - WebRTC 數據通道
+   * @param {Object} webRTCManagerInstance - WebRTCManager 的實例
    */
-  async processFileQueue(dataChannel) {
-    if (this.fileQueue.length === 0) return;
+  async processFileQueue(dataChannel, webRTCManagerInstance) {
+    if (this.fileQueue.length === 0) {
+      if (webRTCManagerInstance) {
+        webRTCManagerInstance.onDataChannelBufferedAmountLow = null;
+      }
+      return;
+    }
     
     this.dataChannel = dataChannel;
+    this.webRTCManagerInstance = webRTCManagerInstance;
+
+    if (this.webRTCManagerInstance) {
+      this.webRTCManagerInstance.onDataChannelBufferedAmountLow = () => {
+        console.log('[FileHandler] Received onDataChannelBufferedAmountLow from WebRTCManager');
+        if (this._bufferedAmountLowResolve) {
+          this._bufferedAmountLowResolve();
+          this._bufferedAmountLowResolve = null; // 清除解析器
+        }
+      };
+    }
     this.currentQueueIndex = 0;
     
     // 初始化性能統計
@@ -144,6 +164,12 @@ export class FileHandler {
       console.log('所有檔案處理完成');
       // 所有檔案處理完成
       this.completePerformanceMeasurement(); // 完成性能測量
+
+      // 清理 WebRTCManager 的回呼
+      if (this.webRTCManagerInstance) {
+        this.webRTCManagerInstance.onDataChannelBufferedAmountLow = null;
+        console.log('[FileHandler] Cleared onDataChannelBufferedAmountLow callback on queue completion.');
+      }
       
       if (this.onQueueComplete) {
         this.onQueueComplete(this.fileQueue);
@@ -441,16 +467,46 @@ export class FileHandler {
         
         // 等待數據通道的緩衝區清空到合理水平
         if (dataChannel.bufferedAmount > this.bufferThreshold) {
-          await new Promise(resolve => {
-            const checkBufferedAmount = () => {
-              if (dataChannel.bufferedAmount < this.bufferThreshold / 2) { // 等到緩衝減少一半再繼續
-                resolve();
-              } else {
-                setTimeout(checkBufferedAmount, 50); // 更頻繁檢查
+          if (this.webRTCManagerInstance && typeof this.webRTCManagerInstance.onDataChannelBufferedAmountLow === 'function') {
+            console.log(`[FileHandler] Buffer full (${dataChannel.bufferedAmount} > ${this.bufferThreshold}), waiting for bufferedamountlow event...`);
+            
+            // 檢查是否已經有一個正在等待的 Promise
+            if (!this._bufferedAmountLowResolve) {
+              const waitPromise = new Promise(resolve => {
+                this._bufferedAmountLowResolve = resolve;
+              });
+              // 安全超時，以防事件因故未觸發
+              const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => {
+                  if (this._bufferedAmountLowResolve) { // 只有在尚未解決時才 reject
+                    reject(new Error('Timeout waiting for bufferedamountlow event'));
+                  }
+                }, 10000) // 10 秒超時
+              );
+
+              try {
+                await Promise.race([waitPromise, timeoutPromise]);
+              } catch (e) {
+                console.warn(`[FileHandler] ${e.message}. Continuing, but this might indicate an issue.`);
+              } finally {
+                // 無論成功、失敗或超時，都清除 resolve 回調
+                this._bufferedAmountLowResolve = null;
               }
-            };
-            setTimeout(checkBufferedAmount, 50);
-          });
+            } else {
+              // 如果已經在等待，則短暫延遲，避免重複創建 Promise
+              console.log('[FileHandler] Already waiting for bufferedamountlow, delaying slightly.');
+              await new Promise(resolve => setTimeout(resolve, 50));
+            }
+
+            if (!this.isSending) { // 檢查在等待後是否仍處於發送狀態
+              console.log('[FileHandler] Sending cancelled while waiting for buffer.');
+              break;
+            }
+            console.log('[FileHandler] Buffer has space or timeout/error, resuming send.');
+          } else {
+            console.warn('[FileHandler] WebRTCManager instance or onDataChannelBufferedAmountLow callback not available. Using a short timeout as fallback.');
+            await new Promise(resolve => setTimeout(resolve, 100)); // 簡單的回退機制
+          }
         }
         
         // 如果在等待過程中傳輸被取消或暫停，則中止或等待
@@ -713,17 +769,12 @@ export class FileHandler {
 
         const view = new DataView(data);
         const seq = view.getUint32(0, true); // true for little-endian
-        const actualChunkData = data.slice(headerSize);
+        // const actualChunkData = data.slice(headerSize); // REMOVED: Avoid slice
         
-        // console.log('[FileHandler] Extracted chunk data. Type:', typeof actualChunkData, 'ByteLength:', actualChunkData ? actualChunkData.byteLength : 'N/A', 'Seq:', seq);
+        // console.log('[FileHandler] Extracted sequence number. Seq:', seq, 'Original buffer length:', data.byteLength);
 
-        if (typeof actualChunkData === 'undefined' || !(actualChunkData instanceof ArrayBuffer)) {
-          console.error(`[FileHandler] CRITICAL: actualChunkData is undefined or not ArrayBuffer after slice for seq ${seq}. Original data byteLength: ${data.byteLength}, actualChunkData type: ${typeof actualChunkData}`);
-          if (this.onError) this.onError(new Error('Failed to extract valid chunk data after slice'), { sequenceNumber: seq, stage: 'handleIncomingData' });
-          return;
-        }
-        
-        this.receiveChunk({ seq, data: actualChunkData });
+        // Pass the original buffer and the offset to receiveChunk
+        this.receiveChunk({ seq, originalBuffer: data, offset: headerSize });
       }
     } catch (error) {
       console.error('[FileHandler] Error processing incoming data:', error);
@@ -819,22 +870,27 @@ export class FileHandler {
   
   /**
    * 接收檔案數據塊
-   * @param {ArrayBuffer} chunk - 檔案數據塊
+   * @param {object} chunkObject - 包含序號、原始 ArrayBuffer 和偏移量的物件
+   *                           { seq: number, originalBuffer: ArrayBuffer, offset: number }
    */
-  receiveChunk(chunkObject) { // chunkObject is { seq, data: ArrayBuffer }
-    if (!chunkObject || typeof chunkObject.data === 'undefined') {
-      console.error('[FileHandler] CRITICAL: receiveChunk called with invalid chunkObject or undefined data. Seq:', chunkObject ? chunkObject.seq : 'N/A');
-      if (this.onError) this.onError(new Error('Received undefined chunk data'), {fileName: this.fileName, sequenceNumber: chunkObject ? chunkObject.seq : 'N/A', stage: 'receiveChunk_guard'});
+  receiveChunk(chunkObject) {
+    if (!chunkObject || typeof chunkObject.originalBuffer === 'undefined' || typeof chunkObject.offset === 'undefined') {
+      console.error('[FileHandler] CRITICAL: receiveChunk called with invalid chunkObject. Seq:', chunkObject ? chunkObject.seq : 'N/A');
+      if (this.onError) this.onError(new Error('Received invalid chunk object structure'), {fileName: this.fileName, sequenceNumber: chunkObject ? chunkObject.seq : 'N/A', stage: 'receiveChunk_guard'});
       return;
     }
 
-    if (!(chunkObject.data instanceof ArrayBuffer)) {
-      console.error('[FileHandler] CRITICAL: chunkObject.data is not an ArrayBuffer. Type:', typeof chunkObject.data, 'Seq:', chunkObject.seq);
-       if (this.onError) this.onError(new Error('Received chunk data is not ArrayBuffer'), {fileName: this.fileName, sequenceNumber: chunkObject.seq, stage: 'receiveChunk_type_check'});
+    if (!(chunkObject.originalBuffer instanceof ArrayBuffer)) {
+      console.error('[FileHandler] CRITICAL: chunkObject.originalBuffer is not an ArrayBuffer. Type:', typeof chunkObject.originalBuffer, 'Seq:', chunkObject.seq);
+       if (this.onError) this.onError(new Error('Received chunk originalBuffer is not ArrayBuffer'), {fileName: this.fileName, sequenceNumber: chunkObject.seq, stage: 'receiveChunk_type_check'});
       return;
     }
     
-    const { seq, data } = chunkObject;
+    const { seq, originalBuffer, offset } = chunkObject;
+    // Create a view of the actual chunk data without copying, using the offset.
+    // The length of the data is originalBuffer.byteLength - offset.
+    const chunkDataView = new Uint8Array(originalBuffer, offset);
+    const chunkDataLength = originalBuffer.byteLength - offset;
 
     if (!this.isReceiving || this.isPaused) {
       console.warn(`[FileHandler] Ignoring chunk seq ${seq} for ${this.fileName} because not receiving or paused. isReceiving: ${this.isReceiving}, isPaused: ${this.isPaused}`);
@@ -849,11 +905,13 @@ export class FileHandler {
       }
 
       if (this.fileChunks[seq] === undefined) {
-        this.fileChunks[seq] = data;
+        // Store the Uint8Array view. When assembling the file, these views can be used.
+        // If the final blob needs a contiguous ArrayBuffer, concatenation will be needed at that stage.
+        this.fileChunks[seq] = chunkDataView;
         this.receivedChunkCount++; // Increment only for new chunks
-        this.receivedSize += data.byteLength;
+        this.receivedSize += chunkDataLength;
         
-        // console.log(`[FileHandler] Chunk ${seq}/${this.totalFileChunks - 1} received for ${this.fileName}. Size: ${data.byteLength}. Total received: ${this.receivedSize}/${this.fileSize}. Count: ${this.receivedChunkCount}/${this.totalFileChunks}`);
+        // console.log(`[FileHandler] Chunk ${seq}/${this.totalFileChunks - 1} received for ${this.fileName}. Size: ${chunkDataLength}. Total received: ${this.receivedSize}/${this.fileSize}. Count: ${this.receivedChunkCount}/${this.totalFileChunks}`);
 
         if (this.fileQueue[this.currentQueueIndex]) {
           this.fileQueue[this.currentQueueIndex].receivedSize = this.receivedSize;
@@ -1065,6 +1123,18 @@ export class FileHandler {
         this.fileChunks = [];
         this.receivedSize = 0;
         this.sentSize = 0;
+// 如果正在等待緩衝區，解決 Promise 並清除
+        if (this._bufferedAmountLowResolve) {
+          this._bufferedAmountLowResolve(); // 解決任何正在等待的 Promise
+          this._bufferedAmountLowResolve = null; // 清除回調
+          console.log('[FileHandler] Resolved and cleared _bufferedAmountLowResolve due to transfer cancellation.');
+        }
+
+        // 清理 WebRTCManager 的回呼
+        if (this.webRTCManagerInstance) {
+          this.webRTCManagerInstance.onDataChannelBufferedAmountLow = null;
+          console.log('[FileHandler] Cleared onDataChannelBufferedAmountLow callback on WebRTCManager due to transfer cancellation.');
+        }
         
         // 通知取消事件
         if (this.onTransferCancelled) {
